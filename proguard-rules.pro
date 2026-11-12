@@ -67,3 +67,10 @@
 
 # Keep swipe
 -keep class org.futo.ml.inference.** { *; }
+# Custom build: WorkManager instantiates workers by reflection, so R8 can't see that
+# doWork() is called and strips it (training would crash with AbstractMethodError).
+-keep class org.futo.inputmethod.latin.xlm.TrainingWorker { *; }
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+    *;
+}
