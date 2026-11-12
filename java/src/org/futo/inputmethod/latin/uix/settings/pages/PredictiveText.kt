@@ -10,6 +10,9 @@ import androidx.compose.ui.res.stringResource
 import org.futo.inputmethod.latin.R
 import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.uix.USE_TRANSFORMER_FINETUNING
+import org.futo.inputmethod.latin.xlm.grammar.LiveGrammarAutoApply
+import org.futo.inputmethod.latin.xlm.grammar.LiveGrammarEnabled
+import org.futo.inputmethod.latin.uix.settings.useDataStoreValue
 import org.futo.inputmethod.latin.uix.settings.NavigationItemStyle
 import org.futo.inputmethod.latin.uix.settings.Tip
 import org.futo.inputmethod.latin.uix.settings.UserSettingsMenu
@@ -39,6 +42,28 @@ val PredictiveTextMenu = UserSettingsMenu(
         //    subtitle = R.string.prediction_settings_transformer_finetuning_subtitle,
         //    setting = USE_TRANSFORMER_FINETUNING
         //).copy(visibilityCheck = visibilityCheckLMEnabled),
+
+        userSettingToggleDataStore(
+            title = R.string.live_grammar_title,
+            subtitle = R.string.live_grammar_subtitle,
+            setting = LiveGrammarEnabled
+        ).copy(visibilityCheck = visibilityCheckLMEnabled),
+
+        userSettingToggleDataStore(
+            title = R.string.live_grammar_auto_apply_title,
+            subtitle = R.string.live_grammar_auto_apply_subtitle,
+            setting = LiveGrammarAutoApply
+        ).copy(visibilityCheck = {
+            visibilityCheckLMEnabled() && useDataStoreValue(LiveGrammarEnabled)
+        }),
+
+        userSettingNavigationItem(
+            title = R.string.personalisation_title,
+            subtitle = R.string.personalisation_subtitle,
+            style = NavigationItemStyle.HomePrimary,
+            navigateTo = "personalisation",
+            icon = R.drawable.book
+        ).copy(visibilityCheck = visibilityCheckLMEnabled),
 
         userSettingNavigationItem(
             title = R.string.prediction_settings_transformer_models,

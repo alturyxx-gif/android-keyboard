@@ -13,6 +13,10 @@ import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo
 import org.futo.inputmethod.latin.common.ComposedData
 import org.futo.inputmethod.latin.settings.SettingsValuesForSuggestion
 import org.futo.inputmethod.latin.utils.JniUtils
+import org.futo.inputmethod.latin.uix.getSetting
+import org.futo.inputmethod.latin.xlm.personal.PersonalAdapterFiles
+import org.futo.inputmethod.latin.xlm.personal.PersonalisationStrength
+import org.futo.inputmethod.latin.xlm.personal.TypingModelThreads
 import java.util.Arrays
 import java.util.Locale
 
@@ -30,15 +34,33 @@ data class ComposeInfo(
 
 class LanguageModel(
     val applicationContext: Context,
-    val lifecycleScope: LifecycleCoroutineScope,
+    val lifecycleScope: LifecycleCoroutineScope?,
     val modelInfoLoader: ModelInfoLoader,
-    val locale: Locale
+    val locale: Locale,
+    /** Used by the training worker to evaluate a specific adapter (null = normal behaviour). */
+    val adapterOverride: java.io.File? = null,
+    /** Used by the training worker: true forces no adapter at all. */
+    val forceNoAdapter: Boolean = false,
 ) {
     private suspend fun loadModel() = withContext(LanguageModelScope) {
         withContext(Dispatchers.Main) { JniUtils.loadNativeLibrary() }
 
         val modelPath = modelInfoLoader.path.absolutePath
-        mNativeState = openNative(modelPath)
+
+        // Personalisation adapter (Stage 2.2): kept as a separate file and applied on load,
+        // so it can be reset, rolled back or weakened without touching the base model.
+        val adapter = adapterOverride ?: PersonalAdapterFiles.activeAdapter(modelInfoLoader.path)
+        val strength = applicationContext.getSetting(PersonalisationStrength)
+        val useAdapter = !forceNoAdapter && adapter != null && adapter.isFile && strength > 0.0f
+                && (adapterOverride != null || applicationContext.getSetting(org.futo.inputmethod.latin.uix.USE_TRANSFORMER_FINETUNING))
+        val threads = applicationContext.getSetting(TypingModelThreads)
+
+        mNativeState = openNative(
+            modelPath,
+            if (useAdapter) adapter!!.absolutePath else "",
+            strength,
+            threads
+        )
 
         // TODO: Not sure how to handle finetuned model being corrupt. Maybe have finetunedA.gguf and finetunedB.gguf and swap between them
         if (mNativeState == 0L) {
@@ -350,6 +372,19 @@ class LanguageModel(
         return@withContext getSuggestionsInternal(proximityInfoHandle, context, composeInfo, autocorrectThreshold, bannedWords)
     }
 
+    /**
+     * Returns, for each continuation, the summed natural-log probability the model
+     * assigns to it when it follows [prefix]. Returns null if the model isn't loaded.
+     * Used by live grammar checking.
+     */
+    suspend fun scoreContinuations(prefix: String, continuations: List<String>): FloatArray? = withContext(LanguageModelScope) {
+        if(!loadModelIfNeeded()) return@withContext null
+        if(continuations.isEmpty()) return@withContext FloatArray(0)
+        val out = FloatArray(continuations.size) { Float.NEGATIVE_INFINITY }
+        scoreContinuationsNative(mNativeState, prefix, continuations.toTypedArray(), out)
+        return@withContext out
+    }
+
     suspend fun closeInternalLocked() = withContext(LanguageModelScope) {
         if (mNativeState != 0L) {
             closeNative(mNativeState)
@@ -358,7 +393,7 @@ class LanguageModel(
     }
 
     var mNativeState: Long = 0
-    private external fun openNative(sourceDir: String): Long
+    private external fun openNative(sourceDir: String, adapterPath: String, adapterScale: Float, nThreads: Int): Long
     private external fun closeNative(state: Long)
     private external fun getSuggestionsNative( // inputs
         state: Long,
@@ -372,6 +407,13 @@ class LanguageModel(
         bannedWords: Array<String>,  // outputs
         outStrings: Array<String?>,
         outProbs: FloatArray
+    )
+
+    private external fun scoreContinuationsNative(
+        state: Long,
+        prefix: String,
+        continuations: Array<String>,
+        outScores: FloatArray
     )
 
     private external fun rescoreSuggestionsNative(

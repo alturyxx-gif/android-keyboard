@@ -23,7 +23,12 @@ class AdapterTrainer(
     private external fun openNative(baseModelPath: String, loraCachePath: String, outputModelPath: String, weight: Float): Long
     private external fun closeNative(handle: Long)
     private external fun addExample(handle: Long, example: String)
-    private external fun train(handle: Long) // Long-running function
+    private external fun train(handle: Long): Boolean // Long-running function
+    private external fun setPlan(handle: Long, steps: Int, ctx: Int, batch: Int, threads: Int)
+
+    fun setPlan(steps: Int, ctx: Int, batch: Int, threads: Int) {
+        if(isHandleValid()) setPlan(handle, steps, ctx, batch, threads)
+    }
 
     private var handle: Long = 0L
     private fun isHandleValid() = handle != 0L
@@ -63,7 +68,8 @@ class AdapterTrainer(
         handle = 0
     }
 
-    suspend fun train() = withContext(TrainingContext) {
+    /** Returns true if training succeeded and the adapter file was written. */
+    suspend fun train(): Boolean = withContext(TrainingContext) {
         if(!isHandleValid()) throw IllegalStateException("Attempting to train with null handle")
         train(handle)
     }

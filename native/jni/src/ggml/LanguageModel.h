@@ -35,7 +35,9 @@ public:
     int tokenToId(const char *text);
     std::string decode(const token_sequence &tokens) const;
 
-    static LanguageModel *createLanguageModel(const std::string &paths);
+    // adapterPath: optional personalisation LoRA adapter applied on top of the base model
+    // (empty = none). adapterScale: its strength (0..1+). nThreads: inference threads.
+    static LanguageModel *createLanguageModel(const std::string &paths, const std::string &adapterPath = "", float adapterScale = 1.0f, int nThreads = 1);
     llama_context *context{};
     llama_model *model{};
     llama_batch batch{};

@@ -7,6 +7,7 @@
 #include <sstream>
 #include <chrono>
 #include <iomanip>
+#include <algorithm>
 #include "org_futo_inputmethod_latin_xlm_AdapterTrainer.h"
 #include "defines.h"
 #include "jni_common.h"
@@ -69,6 +70,7 @@ namespace latinime {
             params.common.n_gradient_accumulation = 2;
             params.common.n_batch = 2;
             params.common.n_ctx = 64;
+            // (the custom build overrides these via SetPlan before training)
             params.common.sample_random_offsets = true;
 
             params.common.warmup = 10;
@@ -99,6 +101,15 @@ namespace latinime {
 
         int Train() const {
             return finetune_train(params);
+        }
+
+        // Stage 2.5: training size scales with how much history there is
+        void SetPlan(int steps, int ctx, int batch, int threads) {
+            if(steps > 0) params.common.adam_n_iter = steps;
+            if(ctx > 0) params.common.n_ctx = ctx;
+            if(batch > 0) params.common.n_batch = batch;
+            if(threads > 0) params.common.n_threads = threads;
+            params.common.warmup = std::max(10, params.common.adam_n_iter / 20);
         }
 
         void UpdateHistoryAndCount(std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end) {
@@ -166,7 +177,10 @@ namespace latinime {
     }
 
     // TODO: Callback for progress
-    static void xlm_AdapterTrainer_train(JNIEnv *env, jobject instance, jlong statePtr) {
+    // Trains the personalisation LoRA adapter and writes it to loraCachePath.
+    // Unlike FUTO's original version, the adapter is NOT merged into the model file:
+    // it stays separate so it can be rolled back, reset or weakened (Stage 2.2).
+    static jboolean xlm_AdapterTrainer_train(JNIEnv *env, jobject instance, jlong statePtr) {
 
         jclass clazz = env->GetObjectClass(instance);
         ASSERT(clazz);
@@ -182,53 +196,19 @@ namespace latinime {
         state->progressMethodId = progressMethodId;
         state->callbackObject = instance;
 
-        std::chrono::system_clock::time_point start, end;
-        start = std::chrono::system_clock::now();
-
         int result = state->Train();
         if(result != 0) {
             AKLOGE("train returned with non-zero code %d", result);
-            return;
+            return JNI_FALSE;
         }
 
-        end = std::chrono::system_clock::now();
+        return JNI_TRUE;
+    }
 
-        // Increment count and add history
-        state->UpdateHistoryAndCount(start, end);
-
-        // Apply LoRA
-        llama_model_params model_params = llama_model_default_params();
-        model_params.use_mmap = false;
-
-        llama_model *model = llama_load_model_from_file(state->baseModelPath.c_str(), model_params);
-
-        if(model == nullptr) {
-            AKLOGE("failed to load model for exporting LoRA");
-            return;
-        }
-
-        int err = llama_model_apply_lora_from_file(
-                model,
-               state->loraCachePath.c_str(),
-               state->outputScale,
-               nullptr,
-               4
-        );
-        if(err != 0) {
-            AKLOGE("Failed to apply lora: %d", err);
-            return;
-        }
-
-        int status = save_llama_model_file(
-            state->outputModelPath.c_str(),
-            state->baseModelPath.c_str(),
-            model,
-            state->metadata
-        );
-        if(status != 0) {
-            AKLOGE("Failed to save model! %d", status);
-            return;
-        }
+    static void xlm_AdapterTrainer_setPlan(JNIEnv *env, jclass clazz, jlong statePtr, jint steps, jint ctx, jint batch, jint threads) {
+        auto *state = reinterpret_cast<AdapterTrainerState *>(statePtr);
+        if(state == nullptr) return;
+        state->SetPlan(steps, ctx, batch, threads);
     }
 
     static const JNINativeMethod sMethods[] = {
@@ -249,8 +229,13 @@ namespace latinime {
             },
             {
                     const_cast<char *>("train"),
-                    const_cast<char *>("(J)V"),
+                    const_cast<char *>("(J)Z"),
                     reinterpret_cast<void *>(xlm_AdapterTrainer_train)
+            },
+            {
+                    const_cast<char *>("setPlan"),
+                    const_cast<char *>("(JIIII)V"),
+                    reinterpret_cast<void *>(xlm_AdapterTrainer_setPlan)
             },
 
     };

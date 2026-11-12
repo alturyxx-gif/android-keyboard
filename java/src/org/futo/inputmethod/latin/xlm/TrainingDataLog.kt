@@ -20,7 +20,10 @@ data class HistoryLogForTraining(
 
     val locale: String,
 
-    val timeStamp: Long
+    val timeStamp: Long,
+
+    // True if this word was typed in a mostly-Roman-Urdu sentence (kept out of English training)
+    val romanUrdu: Boolean = false
 )
 
 fun saveHistoryLogBackup(context: Context, log: List<HistoryLogForTraining>) {

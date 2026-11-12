@@ -48,6 +48,8 @@ import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.uix.isDirectBootUnlocked
 import org.futo.inputmethod.latin.utils.AsyncResultHolder
 import org.futo.inputmethod.latin.xlm.LanguageModelFacilitator
+import org.futo.inputmethod.latin.xlm.grammar.LiveGrammarController
+import org.futo.inputmethod.latin.xlm.grammar.RomanUrdu
 import org.futo.inputmethod.v2keyboard.KeyboardLayoutSetV2
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -130,6 +132,14 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         suggestedWordsCallback = this
     )
 
+    private val liveGrammar = LiveGrammarController(
+        context = context,
+        inputLogic = inputLogic,
+        lifecycleScope = helper.lifecycleScope,
+        modelProvider = { languageModelFacilitator.getLanguageModelForGrammar() },
+        isEnglish = { settings.current?.mLocale?.language == "en" }
+    )
+
     override fun addToHistory(
         word: String,
         wasCapitalized: Boolean,
@@ -141,11 +151,18 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         val isWordBlacklisted = SuggestionBlacklist.getCapitalVariants(word, settings.current.mLocale).any { !suggestionBlacklist.isWordOk(it) }
         if(isWordBlacklisted) return
 
-        dictionaryFacilitator.addToUserHistory(
-            word, wasCapitalized,
-            ngramContext, timestamp,
-            blockOffensive
-        )
+        // Words typed in Roman Urdu sentences are kept in their own vocabulary (see
+        // PersonalisationStore) instead of the English word-history dictionary, so they
+        // don't show up as English predictions.
+        val sentence = ngramContext.fullContext.trim().lines().lastOrNull() ?: ""
+        val isRomanUrdu = RomanUrdu.isMostlyRomanUrdu("$sentence $word")
+        if(!isRomanUrdu) {
+            dictionaryFacilitator.addToUserHistory(
+                word, wasCapitalized,
+                ngramContext, timestamp,
+                blockOffensive
+            )
+        }
 
         if (settings.current.mTransformerPredictionEnabled) {
             languageModelFacilitator.addToHistory(
@@ -238,6 +255,11 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
 
     override fun onDeviceUnlocked() {
         languageModelFacilitator.loadHistoryLog()
+        try {
+            org.futo.inputmethod.latin.xlm.scheduleTrainingWorkerBackground(context)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to schedule personalisation training", e)
+        }
     }
 
     private val expandableExpandableCfg = ExpandableSuggestionBarConfiguration(true, false)
@@ -253,6 +275,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         setNeutralSuggestionStrip()
         dictionaryFacilitator.onStartInput()
         languageModelFacilitator.onStartInput()
+        liveGrammar.onStartInput()
         inputLogic.startInput(
             RichInputMethodManager.getInstance().combiningRulesExtraValueOfCurrentSubtype,
             settings.current
@@ -286,6 +309,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
     }
 
     override fun onFinishInput() {
+        liveGrammar.onFinishInput()
         inputLogic.finishInput()
         dictionaryFacilitator.onFinishInput(context)
         updateSuggestionJob?.cancel()
@@ -313,6 +337,12 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
 
     private fun onEventInternal(event: Event, ignoreSuggestionUpdate: Boolean = false) {
         helper.requestCursorUpdate()
+
+        // Backspace right after an automatic grammar fix undoes the fix instead of deleting
+        if(liveGrammar.onBeforeEvent(event.mKeyCode,
+                event.eventType == Event.EVENT_TYPE_INPUT_KEYPRESS && event.mKeyCode == Constants.CODE_DELETE)) {
+            return
+        }
 
         val cursorBefore = inputLogic.mConnection.mExpectedSelStart
 
@@ -393,6 +423,8 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
 
             updateSuggestions(inputStyle)
         }
+
+        liveGrammar.onAfterEvent()
     }
 
     override fun onEvent(event: Event) = onEventInternal(event)

@@ -313,6 +313,9 @@ android {
             applicationIdSuffix ".custom"
             versionNameSuffix "-custom"
 
+            // Only build native code for 64-bit ARM (Samsung S25 Ultra and all modern phones)
+            ndk { abiFilters 'arm64-v8a' }
+
             buildConfigField "boolean", "IS_PLAYSTORE_BUILD", "false"
             buildConfigField "boolean", "UPDATE_CHECKING", "false"
             buildConfigField "boolean", "UPDATE_CHECKING_NETWORK", "false"
@@ -375,6 +378,11 @@ android {
             java.srcDirs = ['common/src', 'java/src', 'java/stable/java']
             manifest.srcFile 'java/stable/AndroidManifest.xml'
             res.srcDirs = ['java/unstable/res', translationsWithoutEngValues('translations/devbuild')]
+        }
+
+        // Plain JVM unit tests (run with ./gradlew testCustomDebugUnitTest)
+        test {
+            java.srcDirs = ['tests/unit']
         }
 
         androidTest {
@@ -449,6 +457,8 @@ dependencies {
     stableImplementation 'ch.acra:acra-dialog:5.11.1'
     unstableImplementation 'ch.acra:acra-mail:5.11.1'
     unstableImplementation 'ch.acra:acra-dialog:5.11.1'
+    customImplementation 'ch.acra:acra-mail:5.11.1'
+    customImplementation 'ch.acra:acra-dialog:5.11.1'
 
     implementation 'sh.calvin.reorderable:reorderable:3.0.0'
 
@@ -458,9 +468,10 @@ dependencies {
 
     implementation 'com.akuleshov7:ktoml-core:0.7.1'
 
-    //def work_version = "2.9.0"
-    //implementation "androidx.work:work-runtime-ktx:$work_version"
-    //implementation "androidx.work:work-runtime:$work_version"
+    // Re-enabled in the custom build for personalisation training
+    def work_version = "2.9.1"
+    implementation "androidx.work:work-runtime-ktx:$work_version"
+    implementation "androidx.work:work-runtime:$work_version"
 
     implementation project(":voiceinput-shared")
 
@@ -484,6 +495,7 @@ dependencies {
     debugImplementation 'androidx.compose.ui:ui-test-manifest'
 
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1'
     androidTestImplementation "org.mockito:mockito-core:1.9.5"
     androidTestImplementation 'com.google.dexmaker:dexmaker:1.2'
     androidTestImplementation 'com.google.dexmaker:dexmaker-mockito:1.2'

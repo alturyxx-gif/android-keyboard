@@ -1,228 +1,214 @@
 package org.futo.inputmethod.latin.xlm
 
-import android.content.Context
-import androidx.compose.runtime.mutableStateOf
-import androidx.datastore.preferences.core.intPreferencesKey
-import kotlinx.coroutines.flow.MutableSharedFlow
-
-/*
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.PowerManager
+import android.util.Log
 import androidx.annotation.RequiresApi
+import androidx.compose.runtime.mutableStateOf
 import androidx.core.app.NotificationCompat
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
-import androidx.work.Data
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
-import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequest
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.withContext
 import org.futo.inputmethod.latin.R
 import org.futo.inputmethod.latin.uix.USE_TRANSFORMER_FINETUNING
 import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.uix.isDirectBootUnlocked
+import org.futo.inputmethod.latin.xlm.personal.PersonalAdapterFiles
+import org.futo.inputmethod.latin.xlm.personal.PersonalisationStore
+import org.futo.inputmethod.latin.xlm.personal.TrainingDataBuilder
+import org.futo.inputmethod.latin.xlm.personal.TrainingPlan
+import org.futo.inputmethod.latin.xlm.personal.TrainingRunRecord
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+/**
+ * Personalisation training (Phase 2), rewritten for the custom build.
+ *
+ * FUTO had this disabled entirely. The new flow:
+ *  1. Take the whole rolling typing history (last 60 days), not just the words since the
+ *     last run (Stage 2.4)
+ *  2. Build weighted training text with longer context; keep Roman Urdu out (2.3, 2.5, 2.6)
+ *  3. Measure the current model on held-out words ("before")
+ *  4. Train a fresh LoRA adapter, sized to the amount of data (2.5)
+ *  5. Measure again with the new adapter ("after")
+ *  6. Keep the new adapter only if it isn't worse; the previous one is kept for rollback (2.2)
+ *  7. Record the run for the "What it learned" screen (2.1)
+ *
+ * The base model file is never modified.
+ */
 class TrainingWorker(val context: Context, val parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
+    private val TAG = "TrainingWorker"
     private val notificationManager =
-        context.getSystemService(Context.NOTIFICATION_SERVICE) as
-                NotificationManager
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
     override suspend fun doWork(): Result {
-        println("TrainingWorker is starting")
-
-        val shouldTrain = context.getSetting(USE_TRANSFORMER_FINETUNING)
-        if(!shouldTrain) {
-            println("TrainingWorker is exiting as training is disabled")
-            saveHistoryLogBackup(applicationContext, listOf())
-            TrainingWorkerStatus.lmRequest.emit(LanguageModelFacilitatorRequest.ClearTrainingLog)
-            return Result.success()
-        }
+        if(!context.getSetting(USE_TRANSFORMER_FINETUNING)) return Result.success()
+        if(!context.isDirectBootUnlocked) return Result.retry()
 
         TrainingWorkerStatus.isTraining.value = true
-        setForeground(createForegroundInfo("Training..."))
-
-        val modelToTrain = parameters.inputData.getString("modelToTrain")
-        val trainingData = parameters.inputData.getString("trainingData")
-
-        TrainingWorkerStatus.state.emit(train(customModel = modelToTrain, customTrainingData = trainingData))
-        TrainingWorkerStatus.isTraining.value = false
-        println("TrainingWorker has ended")
+        try {
+            try {
+                setForeground(createForegroundInfo("Learning from your typing..."))
+            } catch (e: Exception) {
+                // Foreground isn't allowed in some states; train anyway
+                Log.w(TAG, "Could not start foreground", e)
+            }
+            val result = train()
+            TrainingWorkerStatus.state.emit(result)
+        } catch (e: Exception) {
+            Log.e(TAG, "Training failed", e)
+            TrainingWorkerStatus.state.emit(TrainingStateWithModel(TrainingState.FatalError, null))
+        } finally {
+            TrainingWorkerStatus.isTraining.value = false
+        }
         return Result.success()
     }
 
-    private fun getTrainingData(locales: Set<String>): String {
-        val data = mutableListOf<HistoryLogForTraining>()
-        loadHistoryLogBackup(applicationContext, data)
-
-        data.removeAll { !locales.contains(it.locale) }
-
-        if(data.size < 100) {
-            return ""
+    /** Average log-probability of each held-out word given its context. Higher = better. */
+    private suspend fun evaluate(model: LanguageModel, heldOut: List<String>): Float? {
+        var total = 0.0
+        var n = 0
+        for (line in heldOut) {
+            val idx = line.lastIndexOf(' ')
+            if (idx <= 0) continue
+            val ctx = line.substring(0, idx)
+            val word = line.substring(idx + 1)
+            val score = model.scoreContinuations(ctx, listOf(word))?.firstOrNull() ?: return null
+            if (!score.isFinite()) continue
+            total += score
+            n++
         }
+        return if (n == 0) null else (total / n).toFloat()
+    }
 
-        return data.map { entry ->
-            if(entry.misspelledWord != null) {
-                if(entry.importance == 3) {
-                    listOf(
-                        (0 until 4).map {
-                            TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 64.0f)
-                        }.joinToString(separator = "\n"),
-                        (0 until 4).map {
-                            TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 16.0f)
-                        }.joinToString(separator = "\n"),
-                        (0 until 4).map {
-                            TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 4.0f)
-                        }.joinToString(separator = "\n"),
-                        (0 until 4).map {
-                            TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 1.0f)
-                        }.joinToString(separator = "\n"),
-                        (0 until 4).map {
-                            TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 0.8f)
-                        }.joinToString(separator = "\n"),
-                        /*
-                        (0 until 4).map {
-                            TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 0.6f)
-                        }.joinToString(separator = "\n"),
-                        */
-                    ).joinToString(separator = "\n")
-                } else if(entry.importance == 1) {
-                    listOf(
-                        TrainingDataGenerator.concatFormatWordMisspelling(entry.ngramContext, entry.misspelledWord, entry.committedWord),
-                        TrainingDataGenerator.concatFormatWordMisspelling(entry.ngramContext, entry.misspelledWord, entry.committedWord),
-                        TrainingDataGenerator.concatFormatWordMisspelling(entry.ngramContext, entry.misspelledWord, entry.committedWord),
-                        TrainingDataGenerator.concatFormatWordMisspelling(entry.ngramContext, entry.misspelledWord, entry.committedWord),
-                        TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 1.0f),
-                        TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 1.0f),
-                        TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 0.6f),
-                        TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 0.6f)
-                    ).joinToString(separator = "\n")
-                } else {
-                    listOf(
-                        TrainingDataGenerator.concatFormatWordMisspelling(entry.ngramContext, entry.misspelledWord, entry.committedWord),
-                        TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 1.0f),
-                    ).joinToString(separator = "\n")
+    private suspend fun evaluateWith(modelInfo: ModelInfoLoader, locale: Locale, heldOut: List<String>, adapter: File?): Float? {
+        val lm = LanguageModel(
+            applicationContext, null, modelInfo, locale,
+            adapterOverride = adapter,
+            forceNoAdapter = adapter == null
+        )
+        return try {
+            evaluate(lm, heldOut)
+        } catch (e: Exception) {
+            Log.e(TAG, "Evaluation failed", e)
+            null
+        } finally {
+            lm.closeInternalLocked()
+        }
+    }
+
+    private suspend fun train(): TrainingStateWithModel {
+        PersonalisationStore.ensureLoaded(applicationContext)
+        PersonalisationStore.flush(applicationContext)
+        val history = PersonalisationStore.snapshot(applicationContext)
+
+        val options = ModelPaths.getModelOptions(applicationContext)
+        var lastResult = TrainingStateWithModel(TrainingState.ErrorInadequateData, null)
+
+        for ((language, modelInfo) in options) {
+            val entries = history.filter { it.locale == language }
+            val data = TrainingDataBuilder.build(entries)
+            if (data.train.isEmpty()) continue
+
+            val modelFile = modelInfo.path
+            val locale = Locale.forLanguageTag(language)
+            TrainingWorkerStatus.state.emit(TrainingStateWithModel(TrainingState.Training, modelFile.nameWithoutExtension))
+
+            val started = System.currentTimeMillis()
+            val currentAdapter = PersonalAdapterFiles.activeAdapter(modelFile)
+            val before = evaluateWith(modelInfo, locale, data.heldOut, currentAdapter)
+
+            val pending = PersonalAdapterFiles.pendingFor(modelFile)
+            pending.delete()
+
+            val steps = TrainingPlan.steps(data.train.size)
+            val builder = AdapterTrainerBuilder(modelFile.absolutePath, pending.absolutePath, "")
+            builder.setLossFlow(TrainingWorkerStatus.loss)
+            builder.setProgressFlow(TrainingWorkerStatus.progress)
+            builder.addExamples(data.train)
+
+            val trainer = try {
+                builder.loadAndPrepare()
+            } catch (e: InadequateDataException) {
+                continue
+            }
+
+            val threads = (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
+            trainer.setPlan(steps, TrainingPlan.CONTEXT_TOKENS, TrainingPlan.BATCH, threads)
+
+            val powerManager = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FUTOLatinIME::modelTrainer")
+            val ok = withContext(Dispatchers.Default) {
+                wakeLock.acquire(120 * 60 * 1000L)
+                try {
+                    trainer.train()
+                } finally {
+                    wakeLock.release()
+                    trainer.close()
                 }
+            }
+
+            if (!ok || !pending.isFile) {
+                PersonalisationStore.addRun(applicationContext, TrainingRunRecord(
+                    timeStamp = System.currentTimeMillis() / 1000, modelName = modelFile.nameWithoutExtension,
+                    examples = data.train.size, historyEntries = data.usedEntries, steps = steps,
+                    minutes = (System.currentTimeMillis() - started) / 60000f,
+                    heldOutBefore = before, accepted = false, note = "Training failed"
+                ))
+                lastResult = TrainingStateWithModel(TrainingState.FatalError, modelFile.nameWithoutExtension)
+                continue
+            }
+
+            val after = evaluateWith(modelInfo, locale, data.heldOut, pending)
+
+            // Keep the new adapter unless it is clearly worse than what we had
+            val accepted = before == null || after == null || after >= before - 0.05f
+            if (accepted) {
+                PersonalAdapterFiles.promote(modelFile)
             } else {
-                listOf(
-                    entry.ngramContext.trim() + " " + entry.committedWord,
-                    TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 4.0f),
-                    TrainingDataGenerator.concatWordMisspelling(entry.ngramContext, entry.committedWord, 1.0f)
-                ).joinToString(separator = "\n")
+                pending.delete()
             }
-        }.map{ it.trim() }.joinToString(separator = "\n")
+
+            PersonalisationStore.addRun(applicationContext, TrainingRunRecord(
+                timeStamp = System.currentTimeMillis() / 1000,
+                modelName = modelFile.nameWithoutExtension,
+                examples = data.train.size,
+                historyEntries = data.usedEntries,
+                steps = steps,
+                minutes = (System.currentTimeMillis() - started) / 60000f,
+                heldOutBefore = before,
+                heldOutAfter = after,
+                accepted = accepted,
+                note = if (accepted) "" else "New training made predictions worse, kept the previous version"
+            ))
+
+            ModelPaths.signalReloadModels()
+            lastResult = TrainingStateWithModel(TrainingState.Finished, modelFile.nameWithoutExtension)
+        }
+
+        return lastResult
     }
 
-    private suspend fun train(customModel: String?, customTrainingData: String?): TrainingStateWithModel {
-        val modelToTrain = if(customModel != null) {
-            val file = File(ModelPaths.getModelDirectory(context), "$customModel.gguf")
-            ModelInfoLoader(
-                file,
-                file.nameWithoutExtension,
-            ).loadDetails() ?: return TrainingStateWithModel(TrainingState.FatalError, customModel)
-        } else {
-            val trainableModels = ModelPaths.getModelOptions(applicationContext)
-
-            val modelInfo = trainableModels.firstNotNullOfOrNull {
-                val data = getTrainingData(setOf(it.key))
-                if(data.isEmpty()) {
-                    null
-                } else {
-                    it.value
-                }
-            } ?: return TrainingStateWithModel(TrainingState.ErrorInadequateData, null)
-
-            modelInfo.loadDetails() ?: return TrainingStateWithModel(TrainingState.FatalError, model = modelInfo.path.nameWithoutExtension)
-        }
-
-        val modelFile = File(modelToTrain.path)
-
-        TrainingWorkerStatus.state.emit(
-            TrainingStateWithModel(
-                TrainingState.Training,
-                model = modelFile.nameWithoutExtension
-            )
-        )
-
-        val data = if(customModel != null && customTrainingData != null) {
-            customTrainingData // TODO: This must be preprocessed into word correction format!
-        } else {
-            getTrainingData(modelToTrain.languages.toSet())
-        }
-
-        if (data.isEmpty()) {
-            return TrainingStateWithModel(TrainingState.ErrorInadequateData, modelFile.nameWithoutExtension)
-        }
-
-        val outputModel = File(applicationContext.cacheDir, modelFile.name + ".tmp")
-        val cacheLoraPath = File(applicationContext.cacheDir, "adapter.bin")
-
-        val builder = AdapterTrainerBuilder(
-            modelFile.absolutePath,
-            cacheLoraPath.absolutePath,
-            outputModel.absolutePath
-        )
-
-        builder.setLossFlow(TrainingWorkerStatus.loss)
-        builder.setProgressFlow(TrainingWorkerStatus.progress)
-
-        builder.setWeight(0.75f)
-
-        builder.addExamples(data.lines())
-
-        val trainer = try {
-             builder.loadAndPrepare()
-        } catch(e: InadequateDataException) {
-            return TrainingStateWithModel(TrainingState.ErrorInadequateData, modelFile.nameWithoutExtension)
-        }
-
-        val powerManager = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-        val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FUTOLatinIME::modelTrainer")
-        withContext(Dispatchers.Default) {
-            println("Starting to train")
-            wakeLock.acquire(120*60*1000L /*1 hour*/)
-            try {
-                trainer.train()
-            } finally {
-                wakeLock.release()
-            }
-            println("Finished training")
-        }
-
-        // In case there's no one to receive ClearTrainingLog, save an empty log
-        saveHistoryLogBackup(applicationContext, listOf())
-
-        TrainingWorkerStatus.lmRequest.emit(LanguageModelFacilitatorRequest.ClearTrainingLog)
-
-        val fallback = File(
-            modelFile.absolutePath + ".bak"
-        )
-
-        // TODO: A better solution for backup/reverting, etc
-        //modelFile.copyTo(fallback, overwrite = true)
-        outputModel.copyTo(modelFile, overwrite = true)
-
-        ModelPaths.signalReloadModels()
-
-        return TrainingStateWithModel(TrainingState.Finished, modelFile.nameWithoutExtension)
-    }
-    // Creates an instance of ForegroundInfo which can be used to update the
-    // ongoing notification.
     private fun createForegroundInfo(progress: String): ForegroundInfo {
-        val title = "Model Training"
-        val cancel = "Halt"
-        // This PendingIntent can be used to cancel the worker
-        val intent = WorkManager.getInstance(applicationContext)
-                .createCancelPendingIntent(id)
+        val title = "Keyboard personalisation"
+        val cancel = "Stop"
+        val intent = WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)
 
-        // Create a Notification channel if necessary
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             createChannel()
         }
@@ -233,8 +219,6 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
             .setContentText(progress)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setOngoing(true)
-            // Add the cancel action to the notification which can
-            // be used to cancel the worker
             .addAction(android.R.drawable.ic_delete, cancel, intent)
             .build()
 
@@ -252,56 +236,45 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
             "Model Training Notifications",
             NotificationManager.IMPORTANCE_MIN
         )
-
         notificationManager.createNotificationChannel(channel)
     }
 }
 
-private val WORKER_TAG: String = "TRAINING_WORKER"
-public fun scheduleTrainingWorkerBackground(context: Context) {
-    if(!context.isDirectBootUnlocked) return
+private const val WORKER_TAG: String = "TRAINING_WORKER"
+private const val PERIODIC_NAME = "personalisation_training"
+private const val IMMEDIATE_NAME = "personalisation_training_now"
 
-    val workManager = WorkManager.getInstance(context)
-    workManager.cancelAllWorkByTag(WORKER_TAG)
+/**
+ * Trains roughly twice a day while the phone is charging and the battery isn't low.
+ * (FUTO's version also required "device idle", which on many phones almost never happens.)
+ */
+fun scheduleTrainingWorkerBackground(context: Context) {
+    if(!context.isDirectBootUnlocked) return
 
     val constraints = Constraints.Builder()
         .setRequiresBatteryNotLow(true)
         .setRequiresCharging(true)
-        .setRequiresDeviceIdle(true)
-        //.setRequiredNetworkType(NetworkType.UNMETERED) // If device is on a metered network, the user may be travelling
         .build()
-    
+
     val request = PeriodicWorkRequest.Builder(
         TrainingWorker::class.java,
-        20L, TimeUnit.HOURS,
-        // 12L, TimeUnit.HOURS
+        12L, TimeUnit.HOURS,
     ).addTag(WORKER_TAG).setConstraints(constraints).build()
 
-    workManager.enqueue(request)
+    WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+        PERIODIC_NAME, ExistingPeriodicWorkPolicy.KEEP, request
+    )
 }
 
-public fun scheduleTrainingWorkerImmediately(context: Context, model: ModelInfoLoader? = null, trainingData: String? = null) {
-    val workManager = WorkManager.getInstance(context)
-
-    val data = Data.Builder()
-
-    if(model != null) {
-        data.putString("modelToTrain", model.path.nameWithoutExtension)
-    }
-
-    if(trainingData != null) {
-        data.putString("trainingData", trainingData)
-    }
-
+/** "Train now" button. */
+fun scheduleTrainingWorkerImmediately(context: Context, model: ModelInfoLoader? = null, trainingData: String? = null) {
     val workRequest = OneTimeWorkRequestBuilder<TrainingWorker>()
-        .setInitialDelay(0, TimeUnit.SECONDS) // Run immediately
+        .setInitialDelay(0, TimeUnit.SECONDS)
         .addTag(WORKER_TAG)
-        .setInputData(data.build())
         .build()
 
-    workManager.enqueue(workRequest)
+    WorkManager.getInstance(context).enqueueUniqueWork(IMMEDIATE_NAME, ExistingWorkPolicy.KEEP, workRequest)
 }
-*/
 
 val NUM_TRAINING_RUNS_KEY = intPreferencesKey("training_runs_count")
 
@@ -334,6 +307,3 @@ object TrainingWorkerStatus {
     val loss = MutableSharedFlow<Float>(replay = 4)
     val progress = MutableSharedFlow<Float>(replay = 4)
 }
-
-public fun scheduleTrainingWorkerBackground(context: Context) { }
-public fun scheduleTrainingWorkerImmediately(context: Context, model: ModelInfoLoader? = null, trainingData: String? = null) { }

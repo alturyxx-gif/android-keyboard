@@ -50,24 +50,48 @@ std::string LlamaAdapter::decode(const token_sequence &tokens) const {
     return spm.DecodeIds(tokens);
 }
 
-LanguageModel *LlamaAdapter::createLanguageModel(const std::string &modelPath) {
+LanguageModel *LlamaAdapter::createLanguageModel(const std::string &modelPath, const std::string &adapterPath, float adapterScale, int nThreads) {
     auto adapter = new LlamaAdapter();
     adapter->metadata = loadModelMetadata(modelPath);
 
+    if(nThreads < 1) nThreads = 1;
+    if(nThreads > 8) nThreads = 8;
+
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = LLAMA_CONTEXT_SIZE;
-    ctx_params.n_threads = 1;
-    ctx_params.n_threads_batch = 1;
+    ctx_params.n_threads = nThreads;
+    ctx_params.n_threads_batch = nThreads;
 
     adapter->n_batch = ctx_params.n_batch;
 
+    const bool useAdapter = !adapterPath.empty() && adapterScale > 0.0f;
+
     llama_model_params model_params = llama_model_default_params();
+    // The adapter modifies weights in place, which isn't possible on a read-only mmap
+    if(useAdapter) model_params.use_mmap = false;
 
     adapter->model = llama_load_model_from_file(modelPath.c_str(), model_params);
 
     if(adapter->model == nullptr) {
         delete adapter;
         return nullptr;
+    }
+
+    if(useAdapter) {
+        int err = llama_model_apply_lora_from_file(adapter->model, adapterPath.c_str(), adapterScale, nullptr, nThreads);
+        if(err != 0) {
+            // A broken adapter must never break typing: fall back to the plain base model
+            AKLOGE("Failed to apply personalisation adapter (%d), reloading base model", err);
+            llama_free_model(adapter->model);
+            model_params.use_mmap = true;
+            adapter->model = llama_load_model_from_file(modelPath.c_str(), model_params);
+            if(adapter->model == nullptr) {
+                delete adapter;
+                return nullptr;
+            }
+        } else {
+            AKLOGI("Applied personalisation adapter %s at scale %.2f", adapterPath.c_str(), adapterScale);
+        }
     }
 
     adapter->context = llama_new_context_with_model(adapter->model, ctx_params);

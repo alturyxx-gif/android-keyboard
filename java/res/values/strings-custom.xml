@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strings added by the custom build (grammar, personalisation, voice upgrades). English only. -->
+<resources>
+    <!-- Live grammar correction -->
+    <string name="live_grammar_title">Live grammar correction</string>
+    <string name="live_grammar_subtitle">Fixes commonly confused words (their/there, its/it\'s, a/an, he go → he goes) in the sentence you\'re typing. Skips Roman Urdu sentences.</string>
+    <string name="live_grammar_auto_apply_title">Apply confident fixes automatically</string>
+    <string name="live_grammar_auto_apply_subtitle">High-confidence fixes are applied automatically; press backspace right after to undo. Other fixes are underlined, tap the word to see the fix.</string>
+
+    <!-- Personalisation -->
+    <string name="personalisation_title">Personalisation (what it learned)</string>
+    <string name="personalisation_subtitle">See and control what the keyboard learned from your typing</string>
+</resources>

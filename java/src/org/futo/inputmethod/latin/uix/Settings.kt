@@ -379,9 +379,10 @@ val SYSTEM_VOICE_INPUT_PACKAGE = SettingsKey(
     default = ""
 )
 
+// Custom build: personalisation of the typing model is re-enabled and on by default.
 val USE_TRANSFORMER_FINETUNING = SettingsKey(
     key = booleanPreferencesKey("useTransformerFinetuning2"),
-    default = false
+    default = true
 )
 
 val SUGGESTION_BLACKLIST = SettingsKey(

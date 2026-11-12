@@ -31,6 +31,10 @@ import org.futo.inputmethod.latin.uix.SettingsKey
 import org.futo.inputmethod.latin.uix.USE_TRANSFORMER_FINETUNING
 import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.utils.SuggestionResults
+import org.futo.inputmethod.latin.common.Constants
+import org.futo.inputmethod.latin.xlm.grammar.RomanUrdu
+import org.futo.inputmethod.latin.xlm.personal.Importance
+import org.futo.inputmethod.latin.xlm.personal.PersonalisationStore
 import kotlin.math.ceil
 
 
@@ -371,10 +375,19 @@ public class LanguageModelFacilitator(
         val locale = dictionaryFacilitator.primaryLocale ?: return null
         val wordComposer = inputLogic.mWordComposer ?: return null
 
+        // ---- Custom build: Roman Urdu protection and instant learning ----
+        val typedWord = values.composedData.mTypedWord
+        val sentenceSoFar = values.ngramContext.fullContext.trim().lines().lastOrNull() ?: ""
+        val protectTyped = trainingEnabled && typedWord.isNotEmpty()
+                && PersonalisationStore.urduVocab.shouldProtect(typedWord, sentenceSoFar)
+        if(trainingEnabled) {
+            addInstantSuggestions(suggestionResults, typedWord, sentenceSoFar, protectTyped)
+        }
+
         val suggestedWords = Suggest.obtainNonBatchedInputSuggestedWords(
             wordComposer,
             values.inputStyle,
-            settingsValues.mAutoCorrectionEnabledPerUserSettings,
+            settingsValues.mAutoCorrectionEnabledPerUserSettings && !protectTyped,
             -1,
             locale,
             suggestionResults,
@@ -401,6 +414,55 @@ public class LanguageModelFacilitator(
         return suggestedWords
     }
 
+    /**
+     * Instant learning (Stage 2.7) and Roman Urdu vocabulary (Stage 2.3): adds words the user
+     * typed recently to the suggestion strip without waiting for model training. These are
+     * never ranked first while a word is being typed, so they can't trigger autocorrect.
+     */
+    private fun addInstantSuggestions(
+        results: SuggestionResults,
+        typedWord: String,
+        sentenceSoFar: String,
+        protectTyped: Boolean
+    ) {
+        val urdu = RomanUrdu.isMostlyRomanUrdu("$sentenceSoFar $typedWord")
+        val memory = if(urdu) PersonalisationStore.urduMemory else PersonalisationStore.memory
+        val existing = results.map { it.mWord.lowercase() }.toHashSet()
+        val scores = results.map { it.mScore }.sortedDescending()
+        val top = scores.firstOrNull() ?: 1000
+        val second = scores.getOrNull(1) ?: (top - 1)
+
+        fun add(word: String, score: Int) {
+            if(word.lowercase() in existing) return
+            existing.add(word.lowercase())
+            results.add(SuggestedWordInfo(word, "", score,
+                SuggestedWordInfo.KIND_PREDICTION, null, 0, 0))
+        }
+
+        if(protectTyped) {
+            // Keep exactly what was typed as the top choice, autocorrect is disabled for it
+            results.add(SuggestedWordInfo(typedWord, "", top + 1,
+                SuggestedWordInfo.KIND_TYPED, null, 0, 0))
+            existing.add(typedWord.lowercase())
+        }
+
+        if(typedWord.isEmpty()) {
+            val prev = sentenceSoFar.trim().split(' ').lastOrNull { it.isNotBlank() } ?: return
+            memory.nextWords(prev, limit = 2, minCount = if(urdu) 2 else 3).forEachIndexed { i, (w, count) ->
+                // Strong habits can take the top slot when predicting the next word
+                val score = if(count >= 6 && i == 0) top + 1 else second - 1 - i
+                add(w, score)
+            }
+        } else {
+            val completions = if(urdu) {
+                PersonalisationStore.urduVocab.completions(typedWord, 2)
+            } else {
+                memory.completions(typedWord, 2).map { it.first }
+            }
+            completions.forEachIndexed { i, w -> add(w, second - 1 - i) }
+        }
+    }
+
     public suspend fun destroyModel() {
         if(BuildConfig.DEBUG) Log.d(TAG, "destroyModel called")
         languageModel?.closeInternalLocked()
@@ -411,7 +473,6 @@ public class LanguageModelFacilitator(
         userDictionary.unregister()
     }
 
-    private var trainingEnabled = false
 
     public fun launchProcessor() = lifecycleScope.launch {
         if(BuildConfig.DEBUG) Log.d(TAG, "Starting processor")
@@ -421,9 +482,6 @@ public class LanguageModelFacilitator(
                     if (it == LanguageModelFacilitatorRequest.ResetModel) {
                         if(BuildConfig.DEBUG) Log.d(TAG, "ResetModel event received, destroying model")
                         destroyModel()
-                    }else if(it == LanguageModelFacilitatorRequest.ClearTrainingLog) {
-                        historyLog.clear()
-                        saveHistoryLog()
                     }
                 }
             }
@@ -512,7 +570,8 @@ public class LanguageModelFacilitator(
         return null
     }
 
-    private val historyLog: MutableList<HistoryLogForTraining> = mutableListOf()
+    private val trainingEnabled: Boolean
+        get() = context.getSetting(USE_TRANSFORMER_FINETUNING)
 
     public fun addToHistory(
         word: String,
@@ -522,63 +581,52 @@ public class LanguageModelFacilitator(
         blockPotentiallyOffensive: Boolean,
         importance: Int
     ) {
-        if(shouldPassThroughToLegacy()) return
         if(!trainingEnabled) return
         if(settings.current?.mInputAttributes?.mNoLearning != false) return
 
-        if(dictionaryFacilitator.mostConfidentLocale != languageModel?.locale) return
+        // Only skip when several languages are enabled and the text looks like another one.
+        // (Previously this also silently dropped everything until the model had loaded.)
+        val primary = dictionaryFacilitator.primaryLocale
+        if(dictionaryFacilitator.locales.size > 1
+            && dictionaryFacilitator.mostConfidentLocale?.language != primary?.language) return
 
-        val wordCtx = ngramContext.fullContext.trim().lines().last()
+        val wordCtx = ngramContext.fullContext.trim().lines().lastOrNull() ?: ""
         var committedNgramCtx = ngramContext.extractPrevWordsContext().replace(NgramContext.BEGINNING_OF_SENTENCE_TAG, " ").trim();
         if(committedNgramCtx.isEmpty()) {
             committedNgramCtx = " "
         }
-        
-        val lastIdx = wordCtx.lastIndexOf(committedNgramCtx)
-        if(lastIdx == -1) {
-            //println("addToHistory: extraction failed, couldn't find ngram ctx in full ctx")
-            return
-        }
-
-        val misspelledWord = wordCtx.substring(
-            lastIdx + committedNgramCtx.length
-        )
-        if(misspelledWord.isNotBlank() && (!(misspelledWord.startsWith(" ") || committedNgramCtx == " ") || misspelledWord.endsWith(" ") || misspelledWord.trim().contains(" "))) {
-            //println("addToHistory: extraction failed bad context. wordCtx=[$wordCtx]  --   committedNgramCtx=[$committedNgramCtx]  --  word=[$word]  --  fullNgram=[$ngramContext]")
-            return
-        }
-
-        val ctxBeforeMisspelledWord = wordCtx.dropLast(misspelledWord.length)
 
         val key = committedNgramCtx.trim() + " " + word.trim()
-        val logToAdd = if(misspelledWord.isNotBlank()) {
-            // Correcting (ctx) misspelled -> word
-            HistoryLogForTraining(
-                key,
-                ctxBeforeMisspelledWord,
-                committedNgramCtx,
-                misspelledWord.trim(),
-                word,
-                importance,
-                dictionaryFacilitator.primaryLocale.language,
-                timeStampInSeconds
-            )
+        val isRomanUrdu = RomanUrdu.isMostlyRomanUrdu(wordCtx)
+        val locale = primary?.language ?: "en"
+
+        val lastIdx = wordCtx.lastIndexOf(committedNgramCtx)
+        var misspelledWord = if(lastIdx == -1) "" else wordCtx.substring(lastIdx + committedNgramCtx.length)
+        val extractionOk = lastIdx != -1 && !(misspelledWord.isNotBlank() && (!(misspelledWord.startsWith(" ") || committedNgramCtx == " ") || misspelledWord.endsWith(" ") || misspelledWord.trim().contains(" ")))
+
+        val ctxBeforeWord = if(extractionOk) {
+            wordCtx.dropLast(misspelledWord.length)
         } else {
-            // Predicted (ctx) -> word
-            HistoryLogForTraining(
-                key,
-                ctxBeforeMisspelledWord,
-                committedNgramCtx,
-                null,
-                word,
-                importance,
-                dictionaryFacilitator.primaryLocale.language,
-                timeStampInSeconds
-            )
+            // Fallback instead of silently dropping the word: learn it as a prediction
+            // using whatever context we have.
+            misspelledWord = ""
+            val idx = wordCtx.lastIndexOf(word.trim())
+            if(idx > 0) wordCtx.substring(0, idx) else committedNgramCtx
         }
 
-        historyLog.add(logToAdd)
-        //println("addToHistory: Adding $logToAdd")
+        val logToAdd = HistoryLogForTraining(
+            key,
+            ctxBeforeWord,
+            committedNgramCtx,
+            misspelledWord.trim().ifBlank { null },
+            word,
+            importance,
+            locale,
+            timeStampInSeconds,
+            isRomanUrdu
+        )
+
+        PersonalisationStore.add(context, logToAdd)
     }
 
     public fun unlearnFromHistory(
@@ -587,37 +635,33 @@ public class LanguageModelFacilitator(
         timeStampInSeconds: Long,
         eventType: Int
     ) {
-        if(shouldPassThroughToLegacy()) return
         if(!trainingEnabled) return
 
-        val wordCtx = ngramContext.fullContext.trim().lines().last()
         var committedNgramCtx = ngramContext.extractPrevWordsContext().replace(NgramContext.BEGINNING_OF_SENTENCE_TAG, " ").trim();
         if(committedNgramCtx.isEmpty()) {
             committedNgramCtx = " "
         }
-        
+
         val keyToSearch = committedNgramCtx.trim() + " " + word.trim()
+        val removed = PersonalisationStore.removeLast(context, keyToSearch)
 
-        val logToRemove = historyLog.indexOfLast {
-            it.key.startsWith(keyToSearch) || it.key == keyToSearch
-        }
-
-        if(logToRemove == -1) {
-            //println("addToHistory: UNLEARN Couldn't find key $keyToSearch")
-        } else {
-            //println("addToHistory: Unlearning ${historyLog[logToRemove]}")
-            historyLog.removeAt(logToRemove)
+        // Backspace undid an autocorrection: remember that what was typed was intended.
+        if(eventType == Constants.EVENT_REVERT && removed?.misspelledWord != null) {
+            PersonalisationStore.add(context, removed.copy(
+                key = committedNgramCtx.trim() + " " + removed.misspelledWord.trim(),
+                committedWord = removed.misspelledWord.trim(),
+                importance = Importance.REVERTED_AUTOCORRECT,
+                timeStamp = timeStampInSeconds
+            ))
         }
     }
 
     public fun saveHistoryLog() {
-        if(!context.getSetting(USE_TRANSFORMER_FINETUNING)) historyLog.clear()
-        saveHistoryLogBackup(context, historyLog)
+        PersonalisationStore.flush(context)
     }
 
     public fun loadHistoryLog() {
-        assert(historyLog.isEmpty())
-        loadHistoryLogBackup(context, historyLog)
+        PersonalisationStore.ensureLoaded(context)
     }
 
     public fun onStartInput() {
@@ -626,4 +670,15 @@ public class LanguageModelFacilitator(
     }
 
     public fun isTransformerDisabled(): Boolean = transformerDisabled
+
+    /**
+     * The currently loaded typing model, for live grammar checking. Returns null when the
+     * transformer is disabled, the model isn't loaded yet, or it's for a different language.
+     */
+    public fun getLanguageModelForGrammar(): LanguageModel? {
+        if(shouldPassThroughToLegacy()) return null
+        val model = languageModel ?: return null
+        if(model.locale.language != dictionaryFacilitator.primaryLocale?.language) return null
+        return model
+    }
 }

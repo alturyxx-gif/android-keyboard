@@ -200,8 +200,8 @@ struct LanguageModelState {
         std::vector<int> general_banned_tokens;
     } specialTokens;
 
-    bool Initialize(const std::string &paths){
-        model = std::unique_ptr<LanguageModel>(LlamaAdapter::createLanguageModel(paths));
+    bool Initialize(const std::string &paths, const std::string &adapterPath = "", float adapterScale = 1.0f, int nThreads = 1){
+        model = std::unique_ptr<LanguageModel>(LlamaAdapter::createLanguageModel(paths, adapterPath, adapterScale, nThreads));
 
         if(!model) {
             AKLOGE("GGMLDict: Could not load model");
@@ -862,6 +862,93 @@ struct LanguageModelState {
     }
 };
 
+
+// Scores how likely each continuation is after a shared prefix.
+// Returns the summed natural-log probability of each continuation's tokens
+// (or -INFINITY on failure). Used by live grammar checking (Phase 3) and the
+// personalisation quality check (Phase 2).
+//
+// The KV cache is shared with suggestion decoding, so this keeps
+// transformerContext.active_context in sync with what is actually cached
+// and invalidates the cached token mixes.
+static std::vector<float> ScoreContinuations(LanguageModelState *state, const std::string &prefix, const std::vector<std::string> &continuations) {
+    std::vector<float> out(continuations.size(), -INFINITY);
+
+    LanguageModel *model = state->model.get();
+    llama_context *ctx = model->context();
+    llama_batch batch = model->adapter->batch;
+    const int n_batch = model->adapter->n_batch;
+    const size_t n_vocab = llama_n_vocab(llama_get_model(ctx));
+
+    token_sequence base;
+    if(!trim(prefix).empty()) base = model->tokenize(trim(prefix) + " ");
+    base.insert(base.begin(), 1); // BOS
+
+    std::vector<float> logprobs(n_vocab);
+
+    for(size_t c = 0; c < continuations.size(); c++) {
+        token_sequence cont = model->tokenize(trim(continuations[c]));
+        if(cont.empty()) { out[c] = 0.0f; continue; }
+
+        token_sequence full = base;
+        full.insert(full.end(), cont.begin(), cont.end());
+        if((int)full.size() >= LLAMA_CONTEXT_SIZE) continue;
+
+        // Reuse whatever prefix is already cached, but always re-decode the last
+        // prefix token so we get the logits that predict the first continuation token.
+        const auto &active = model->transformerContext.active_context;
+        int npast = 0;
+        while(npast < (int)std::min(active.size(), full.size()) && active[npast] == full[npast]) npast++;
+        npast = std::min(npast, (int)base.size() - 1);
+
+        int n_new = (int)full.size() - npast;
+        if(n_new > n_batch) continue;
+
+        llama_kv_cache_seq_rm(ctx, 0, (llama_pos)npast, -1);
+
+        batch.n_tokens = n_new;
+        for(int i = 0; i < n_new; i++) {
+            batch.token[i] = full[npast + i];
+            batch.pos[i] = (llama_pos)(npast + i);
+            batch.seq_id[i][0] = 0;
+            batch.n_seq_id[i] = 1;
+            // We need logits at positions base.size()-1 .. full.size()-2
+            int absolute = npast + i;
+            batch.logits[i] = (int8_t)(absolute >= (int)base.size() - 1 && absolute < (int)full.size() - 1);
+        }
+
+        if(llama_decode(ctx, batch) != 0) {
+            AKLOGE("ScoreContinuations: llama_decode failed");
+            llama_kv_cache_seq_rm(ctx, -1, -1, -1);
+            model->transformerContext.active_context = { };
+            state->past_mixes.clear();
+            return out;
+        }
+
+        model->transformerContext.active_context = full;
+        state->past_mixes.clear();
+
+        float total = 0.0f;
+        for(int i = 0; i < n_new; i++) {
+            int absolute = npast + i;
+            if(!(absolute >= (int)base.size() - 1 && absolute < (int)full.size() - 1)) continue;
+
+            const float *logits = llama_get_logits_ith(ctx, i);
+            float maxv = -INFINITY;
+            for(size_t v = 0; v < n_vocab; v++) maxv = std::max(maxv, logits[v]);
+            double sum = 0.0;
+            for(size_t v = 0; v < n_vocab; v++) sum += std::exp((double)(logits[v] - maxv));
+            float logZ = maxv + (float)std::log(sum);
+
+            llama_token target = full[absolute + 1];
+            total += logits[target] - logZ;
+        }
+        out[c] = total;
+    }
+
+    return out;
+}
+
 struct SuggestionItemToRescore {
     int index;
 
@@ -873,22 +960,20 @@ struct SuggestionItemToRescore {
 };
 
 namespace latinime {
-    static jlong xlm_LanguageModel_open(JNIEnv *env, jclass clazz, jstring modelDir) {
+    static jlong xlm_LanguageModel_open(JNIEnv *env, jclass clazz, jstring modelDir, jstring adapterPath, jfloat adapterScale, jint nThreads) {
         GGML_UNUSED(clazz);
 
         AKLOGI("open LM");
-        const jsize sourceDirUtf8Length = env->GetStringUTFLength(modelDir);
-        if (sourceDirUtf8Length <= 0) {
+        std::string modelPathStr = jstring2string(env, modelDir);
+        if (modelPathStr.empty()) {
             AKLOGE("DICT: Can't get sourceDir string");
             return 0;
         }
-        char sourceDirChars[sourceDirUtf8Length + 1];
-        env->GetStringUTFRegion(modelDir, 0, env->GetStringLength(modelDir), sourceDirChars);
-        sourceDirChars[sourceDirUtf8Length] = '\0';
+        std::string adapterPathStr = adapterPath ? jstring2string(env, adapterPath) : "";
 
         auto *state = new LanguageModelState();
 
-        if(!state->Initialize(sourceDirChars)) {
+        if(!state->Initialize(modelPathStr, adapterPathStr, adapterScale, nThreads)) {
             delete state;
             return 0;
         }
@@ -984,6 +1069,36 @@ namespace latinime {
         }
 
         env->ReleaseIntArrayElements(outScores, outArray, 0);
+    }
+
+    // (JLjava/lang/String;[Ljava/lang/String;[F)V
+    static void xlm_LanguageModel_scoreContinuations(JNIEnv *env, jclass clazz,
+        jlong dict,
+        jstring prefix,
+        jobjectArray inContinuations,
+        jfloatArray outScores
+    ) {
+        GGML_UNUSED(clazz);
+        auto *state = reinterpret_cast<LanguageModelState *>(dict);
+        if(state == nullptr) return;
+
+        std::string prefixString = jstring2string(env, prefix);
+
+        std::vector<std::string> continuations;
+        jsize n = env->GetArrayLength(inContinuations);
+        for(jsize i = 0; i < n; i++) {
+            auto jstr = (jstring)env->GetObjectArrayElement(inContinuations, i);
+            continuations.push_back(jstring2string(env, jstr));
+            env->DeleteLocalRef(jstr);
+        }
+
+        auto scores = ScoreContinuations(state, prefixString, continuations);
+
+        jsize outSize = env->GetArrayLength(outScores);
+        for(jsize i = 0; i < std::min(outSize, (jsize)scores.size()); i++) {
+            jfloat v = scores[i];
+            env->SetFloatArrayRegion(outScores, i, 1, &v);
+        }
     }
 
     static void xlm_LanguageModel_getSuggestions(JNIEnv *env, jclass clazz,
@@ -1268,7 +1383,7 @@ namespace latinime {
     static const JNINativeMethod sMethods[] = {
             {
                     const_cast<char *>("openNative"),
-                    const_cast<char *>("(Ljava/lang/String;)J"),
+                    const_cast<char *>("(Ljava/lang/String;Ljava/lang/String;FI)J"),
                     reinterpret_cast<void *>(xlm_LanguageModel_open)
             },
             {
@@ -1285,6 +1400,11 @@ namespace latinime {
                     const_cast<char *>("rescoreSuggestionsNative"),
                     const_cast<char *>("(JLjava/lang/String;[Ljava/lang/String;[I[I)V"),
                     reinterpret_cast<void *>(xlm_LanguageModel_rescoreSuggestions)
+            },
+            {
+                    const_cast<char *>("scoreContinuationsNative"),
+                    const_cast<char *>("(JLjava/lang/String;[Ljava/lang/String;[F)V"),
+                    reinterpret_cast<void *>(xlm_LanguageModel_scoreContinuations)
             }
     };
 
