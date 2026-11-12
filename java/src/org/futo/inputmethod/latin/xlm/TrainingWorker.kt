@@ -227,7 +227,7 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
     private fun createForegroundInfo(progress: String): ForegroundInfo {
         val title = "Keyboard personalisation"
         val cancel = "Stop"
-        val intent = WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)
+        val intent = workManager(applicationContext).createCancelPendingIntent(id)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             createChannel()
@@ -260,6 +260,26 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
     }
 }
 
+/**
+ * FUTO's manifest removes androidx.startup's InitializationProvider (tools:node="remove"), so
+ * WorkManager is never initialised automatically and WorkManager.getInstance() throws. Initialise
+ * it on first use instead. (Without this, "Train now" crashed and background training was never
+ * scheduled.)
+ */
+private val workManagerLock = Any()
+fun workManager(context: Context): WorkManager = synchronized(workManagerLock) {
+    try {
+        WorkManager.getInstance(context)
+    } catch (e: IllegalStateException) {
+        try {
+            WorkManager.initialize(context.applicationContext, androidx.work.Configuration.Builder().build())
+        } catch (_: IllegalStateException) {
+            // Already initialised by another thread/process in the meantime
+        }
+        WorkManager.getInstance(context)
+    }
+}
+
 private const val WORKER_TAG: String = "TRAINING_WORKER"
 private const val PERIODIC_NAME = "personalisation_training"
 private const val IMMEDIATE_NAME = "personalisation_training_now"
@@ -281,7 +301,7 @@ fun scheduleTrainingWorkerBackground(context: Context) {
         12L, TimeUnit.HOURS,
     ).addTag(WORKER_TAG).setConstraints(constraints).build()
 
-    WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+    workManager(context).enqueueUniquePeriodicWork(
         PERIODIC_NAME, ExistingPeriodicWorkPolicy.KEEP, request
     )
 }
@@ -293,7 +313,7 @@ fun scheduleTrainingWorkerImmediately(context: Context, model: ModelInfoLoader? 
         .addTag(WORKER_TAG)
         .build()
 
-    WorkManager.getInstance(context).enqueueUniqueWork(IMMEDIATE_NAME, ExistingWorkPolicy.KEEP, workRequest)
+    workManager(context).enqueueUniqueWork(IMMEDIATE_NAME, ExistingWorkPolicy.KEEP, workRequest)
 }
 
 val NUM_TRAINING_RUNS_KEY = intPreferencesKey("training_runs_count")
