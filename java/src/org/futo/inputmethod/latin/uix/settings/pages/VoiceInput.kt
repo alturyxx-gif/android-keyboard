@@ -1,5 +1,9 @@
 package org.futo.inputmethod.latin.uix.settings.pages
 
+import androidx.compose.ui.unit.dp
+
+import androidx.compose.foundation.layout.padding
+
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -198,7 +202,17 @@ val VoiceInputMenu = UserSettingsMenu(
                     java.io.File(context.noBackupFilesDir, "voice_last_run.txt").takeIf { it.exists() }?.readText()
                 } catch (e: Exception) { null }
             }
-            if (!text.isNullOrBlank()) Tip("Last voice input run:\n$text")
+            if (!text.isNullOrBlank()) {
+                val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                Tip("Last voice input run:\n$text")
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(text))
+                        android.widget.Toast.makeText(context, "Copied", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = androidx.compose.ui.Modifier.padding(horizontal = 16.dp)
+                ) { androidx.compose.material3.Text("Copy details") }
+            }
         }.copy(visibilityCheck = visibilityCheckNotSystemVoiceInput),
 
         userSettingToggleDataStore(

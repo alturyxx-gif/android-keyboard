@@ -154,6 +154,8 @@ class WhisperGGML(
                 samples.size / 16000.0, loadMillis / 1000.0, inferMillis / 1000.0))
             if (error.isNotEmpty()) append("Note: $error\n")
             if (result.isEmpty()) append("Result was empty\n")
+            val gpuLog = (gpuLogNative(handle) ?: "").trim()
+            if (gpuLog.isNotEmpty()) append("\nEngine log from the GPU attempt:\n$gpuLog\n")
         }.trim())
 
         if(result.contains("<>CANCELLED<>")) {
@@ -187,6 +189,7 @@ class WhisperGGML(
     private external fun inferNative(handle: Long, samples: FloatArray, prompt: String, textContext: String, languages: Array<String>, bailLanguages: Array<String>, decodingMode: Int, suppressNonSpeechTokens: Boolean): String?
     private external fun isUsingGpuNative(handle: Long): Boolean
     private external fun lastErrorNative(handle: Long): String?
+    private external fun gpuLogNative(handle: Long): String?
     private external fun cancelNative(handle: Long)
     private external fun closeNative(handle: Long)
 }

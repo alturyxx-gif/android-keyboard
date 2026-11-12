@@ -1,5 +1,8 @@
 #include <string>
 #include <cstring>
+#include <atomic>
+#include <deque>
+#include <mutex>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -78,13 +81,46 @@ struct WhisperModelState {
     std::string model_path;
     int n_threads = 4;
     std::string last_error;
+    std::string gpu_log;  // engine log lines from the last GPU attempt
 };
+
+// Custom build: while a GPU attempt is running, keep the engine's log lines so they can be
+// shown in Voice Input settings ("Last voice input run") to diagnose GPU problems.
+static std::mutex g_log_mutex;
+static std::deque<std::string> g_engine_log;
+static std::atomic<bool> g_capture_log{false};
+
+static void engine_log_start() {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_engine_log.clear();
+    g_capture_log = true;
+}
+
+static std::string engine_log_take() {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_capture_log = false;
+    std::string out;
+    for(auto &l : g_engine_log) { out += l; out += "\n"; }
+    g_engine_log.clear();
+    return out;
+}
 
 void log_callback(transcribe_log_level level, const char *msg, void *userdata) {
     if(level >= TRANSCRIBE_LOG_LEVEL_ERROR) {
         AKLOGE("[transcribe:%d] %s", level, msg);
     } else {
         AKLOGI("[transcribe:%d] %s", level, msg);
+    }
+
+    if(g_capture_log && msg && level >= TRANSCRIBE_LOG_LEVEL_INFO) {
+        std::string line = msg;
+        while(!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+        if(line.empty()) return;
+        if(line.size() > 240) line = line.substr(0, 240) + "...";
+        const char *tag = level >= TRANSCRIBE_LOG_LEVEL_ERROR ? "E " : level >= TRANSCRIBE_LOG_LEVEL_WARN ? "W " : "";
+        std::lock_guard<std::mutex> lock(g_log_mutex);
+        g_engine_log.push_back(std::string(tag) + line);
+        while(g_engine_log.size() > 80) g_engine_log.pop_front();
     }
 }
 
@@ -138,6 +174,7 @@ static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboo
     if(num_procs > 6) num_procs = 6;
 
     transcribe_status result = TRANSCRIBE_ERR_GGUF;
+    if(use_gpu) engine_log_start();
     if(use_gpu) {
         // Stage 1.3: try the GPU (Vulkan) first, fall back to the CPU if it isn't available
         result = open_session(model_dir_str, TRANSCRIBE_BACKEND_VULKAN, (int)num_procs, &state->session);
@@ -145,6 +182,8 @@ static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboo
             state->using_gpu = true;
         } else {
             AKLOGE("[voice] GPU open failed (%s), falling back to CPU", transcribe_status_string(result));
+            state->gpu_log = engine_log_take();
+            state->last_error = std::string("GPU could not start (") + transcribe_status_string(result) + "), used CPU";
             if(state->session) { transcribe_session_free(state->session); state->session = nullptr; }
         }
     }
@@ -295,6 +334,7 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
 
     auto result = transcribe_run(state->session, samples, num_samples, &params);
 
+    const bool attempted_gpu = state->using_gpu;
     // GPU safety net: if the GPU run failed, or produced no text for over a second of audio,
     // re-open the model on the CPU and run again, so the user still gets their text.
     if(state->using_gpu && result != TRANSCRIBE_ERR_ABORTED && result != TRANSCRIBE_ERR_LANG_BAILED) {
@@ -309,6 +349,7 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
                     : std::string("GPU returned no text, used CPU instead");
             AKLOGE("[voice] %s", state->last_error.c_str());
 
+            state->gpu_log = engine_log_take();
             transcribe_session_free(state->session);
             state->session = nullptr;
             state->using_gpu = false;
@@ -324,6 +365,7 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
         }
     }
     env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
+    if(attempted_gpu && state->gpu_log.empty()) state->gpu_log = engine_log_take();
 
     std::string output;
     if(result == TRANSCRIBE_ERR_LANG_BAILED) {
@@ -360,6 +402,14 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
 static jstring WhisperGGML_lastError(JNIEnv *env, jclass clazz, jlong handle) {
     auto *state = reinterpret_cast<WhisperModelState *>(handle);
     return env->NewStringUTF(state ? state->last_error.c_str() : "");
+}
+
+static jstring WhisperGGML_gpuLog(JNIEnv *env, jclass clazz, jlong handle) {
+    auto *state = reinterpret_cast<WhisperModelState *>(handle);
+    if(!state) return env->NewStringUTF("");
+    std::string log = state->gpu_log;
+    state->gpu_log.clear();
+    return string2jstring(env, log.c_str());
 }
 
 static jboolean WhisperGGML_startStream(JNIEnv *env, jobject instance, jlong handle, jstring prompt, jobjectArray languages, jobjectArray bail_languages, jint tier) {
@@ -619,6 +669,11 @@ static const JNINativeMethod sMethods[] = {
                 const_cast<char *>("isUsingGpuNative"),
                 const_cast<char *>("(J)Z"),
                 reinterpret_cast<void *>(WhisperGGML_isUsingGpu)
+        },
+        {
+                const_cast<char *>("gpuLogNative"),
+                const_cast<char *>("(J)Ljava/lang/String;"),
+                reinterpret_cast<void *>(WhisperGGML_gpuLog)
         },
         {
                 const_cast<char *>("lastErrorNative"),
