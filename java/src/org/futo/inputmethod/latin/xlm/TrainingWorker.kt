@@ -27,6 +27,7 @@ import org.futo.inputmethod.latin.R
 import org.futo.inputmethod.latin.uix.USE_TRANSFORMER_FINETUNING
 import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.uix.isDirectBootUnlocked
+import org.futo.inputmethod.latin.xlm.personal.GeneralEnglishCheck
 import org.futo.inputmethod.latin.xlm.personal.PersonalAdapterFiles
 import org.futo.inputmethod.latin.xlm.personal.PersonalisationStore
 import org.futo.inputmethod.latin.xlm.personal.TrainingDataBuilder
@@ -96,17 +97,24 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
         return if (n == 0) null else (total / n).toFloat()
     }
 
-    private suspend fun evaluateWith(modelInfo: ModelInfoLoader, locale: Locale, heldOut: List<String>, adapter: File?): Float? {
+    private data class Quality(val personal: Float?, val general: Float?)
+
+    private suspend fun evaluateWith(modelInfo: ModelInfoLoader, locale: Locale, heldOut: List<String>, adapter: File?): Quality {
         val lm = LanguageModel(
             applicationContext, null, modelInfo, locale,
             adapterOverride = adapter,
             forceNoAdapter = adapter == null
         )
         return try {
-            evaluate(lm, heldOut)
+            Quality(
+                personal = evaluate(lm, heldOut),
+                general = if (locale.language == "en") {
+                    evaluate(lm, GeneralEnglishCheck.LINES.map { it.replace('|', ' ') })
+                } else null
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Evaluation failed", e)
-            null
+            Quality(null, null)
         } finally {
             lm.closeInternalLocked()
         }
@@ -132,6 +140,8 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
             val started = System.currentTimeMillis()
             val currentAdapter = PersonalAdapterFiles.activeAdapter(modelFile)
             val before = evaluateWith(modelInfo, locale, data.heldOut, currentAdapter)
+            val baseGeneral = if (currentAdapter == null) before.general
+                else evaluateWith(modelInfo, locale, emptyList(), null).general
 
             val pending = PersonalAdapterFiles.pendingFor(modelFile)
             pending.delete()
@@ -168,7 +178,7 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
                     timeStamp = System.currentTimeMillis() / 1000, modelName = modelFile.nameWithoutExtension,
                     examples = data.train.size, historyEntries = data.usedEntries, steps = steps,
                     minutes = (System.currentTimeMillis() - started) / 60000f,
-                    heldOutBefore = before, accepted = false, note = "Training failed"
+                    heldOutBefore = before.personal, accepted = false, note = "Training failed"
                 ))
                 lastResult = TrainingStateWithModel(TrainingState.FatalError, modelFile.nameWithoutExtension)
                 continue
@@ -176,8 +186,12 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
 
             val after = evaluateWith(modelInfo, locale, data.heldOut, pending)
 
-            // Keep the new adapter unless it is clearly worse than what we had
-            val accepted = before == null || after == null || after >= before - 0.05f
+            // Keep the new adapter only if (a) your own held-out typing didn't get worse and
+            // (b) everyday English didn't get noticeably worse compared to the plain base model
+            val personalOk = before.personal == null || after.personal == null || after.personal >= before.personal - 0.05f
+            val generalOk = baseGeneral == null || after.general == null ||
+                    after.general >= baseGeneral - GeneralEnglishCheck.MAX_ALLOWED_DROP
+            val accepted = personalOk && generalOk
             if (accepted) {
                 PersonalAdapterFiles.promote(modelFile)
             } else {
@@ -191,10 +205,16 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
                 historyEntries = data.usedEntries,
                 steps = steps,
                 minutes = (System.currentTimeMillis() - started) / 60000f,
-                heldOutBefore = before,
-                heldOutAfter = after,
+                heldOutBefore = before.personal,
+                heldOutAfter = after.personal,
+                generalBefore = baseGeneral,
+                generalAfter = after.general,
                 accepted = accepted,
-                note = if (accepted) "" else "New training made predictions worse, kept the previous version"
+                note = when {
+                    accepted -> ""
+                    !personalOk -> "New training made your predictions worse, kept the previous version"
+                    else -> "New training hurt general English too much, kept the previous version"
+                }
             ))
 
             ModelPaths.signalReloadModels()

@@ -4,31 +4,30 @@ import android.content.Context
 import androidx.annotation.StringRes
 import org.futo.voiceinput.shared.ggml.WhisperGGML
 import java.io.File
-import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
-import java.nio.MappedByteBuffer
-import java.nio.channels.FileChannel
 
 
-// Taken from https://github.com/tensorflow/tflite-support/blob/483c45d002cbed57d219fae1676a4d62b28fba73/tensorflow_lite_support/java/src/java/org/tensorflow/lite/support/common/FileUtil.java#L158
 /**
- * Loads a file from the asset folder through memory mapping.
- *
- * @param context Application context to access assets.
- * @param filePath Asset path of the file.
- * @return the loaded memory mapped file.
- * @throws IOException if an I/O error occurs when loading the file model.
+ * The voice engine (transcribe.cpp) loads models from a file path, so the built-in model
+ * (stored inside the APK's assets) is copied out once to the code cache directory.
  */
 @Throws(IOException::class)
-private fun loadMappedFile(context: Context, filePath: String): MappedByteBuffer {
-    context.assets.openFd(filePath).use { fileDescriptor ->
-        FileInputStream(fileDescriptor.fileDescriptor).use { inputStream ->
-            val fileChannel = inputStream.channel
-            val startOffset = fileDescriptor.startOffset
-            val declaredLength = fileDescriptor.declaredLength
-            return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
-        }
+private fun extractAsset(context: Context, assetName: String): File {
+    val file = File(context.codeCacheDir, "_FUTOASSET_$assetName")
+    val expectedSize = try {
+        context.assets.openFd(assetName).use { it.length }
+    } catch (e: IOException) {
+        -1L
     }
+    if (file.isFile && (expectedSize < 0 || file.length() == expectedSize)) return file
+
+    val tmp = File(context.codeCacheDir, "_FUTOASSET_$assetName.tmp")
+    context.assets.open(assetName).use { input ->
+        FileOutputStream(tmp).use { output -> input.copyTo(output) }
+    }
+    tmp.renameTo(file)
+    return file
 }
 
 // Maybe add `val languages: Set<Language>`
@@ -57,29 +56,12 @@ internal class ModelBuiltInAsset(
     }
 
     override fun loadGGML(context: Context): WhisperGGML {
-        val file = loadMappedFile(context, ggmlFile)
-        return WhisperGGML(file)
+        return WhisperGGML(extractAsset(context, ggmlFile))
     }
 
     override fun key(context: Context): Any {
         return "BuiltIn$ggmlFile"
     }
-}
-
-@Throws(IOException::class)
-private fun tryOpenDownloadedModel(file: File): MappedByteBuffer {
-    val fis = file.inputStream()
-    val channel = fis.channel
-
-    return channel.map(
-        FileChannel.MapMode.READ_ONLY,
-        0, channel.size()
-    ).load()
-}
-
-@Throws(IOException::class)
-private fun Context.tryOpenDownloadedModel(pathStr: String): MappedByteBuffer {
-    return tryOpenDownloadedModel(File(filesDir, pathStr))
 }
 
 internal class ModelDownloadable(
@@ -98,8 +80,7 @@ internal class ModelDownloadable(
     }
 
     override fun loadGGML(context: Context): WhisperGGML {
-        val file = context.tryOpenDownloadedModel(ggmlFile)
-        return WhisperGGML(file)
+        return WhisperGGML(File(context.filesDir, ggmlFile))
     }
 
     override fun key(context: Context): Any {
@@ -120,7 +101,6 @@ public class ModelFileFile(
     }
 
     override fun loadGGML(context: Context): WhisperGGML {
-        val file = tryOpenDownloadedModel(file)
         return WhisperGGML(file)
     }
 

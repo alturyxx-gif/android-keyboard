@@ -145,16 +145,42 @@ object TrainingDataBuilder {
  * regardless of data size; this scales with the amount of data so more history is actually used.
  */
 object TrainingPlan {
-    const val MIN_STEPS = 128
-    const val MAX_STEPS = 1200
+    const val MIN_STEPS = 32
+    const val MAX_STEPS = 600
     const val BATCH = 4
     const val CONTEXT_TOKENS = 128
 
+    /**
+     * About one pass over the training lines. Host tests on the real model showed that many
+     * passes over a small history makes the model memorise it and get worse at general English,
+     * so this deliberately stays close to a single pass.
+     */
     fun steps(numTrainingLines: Int): Int {
-        // Aim for ~1.5 passes over the data
-        val wanted = (numTrainingLines * 1.5 / BATCH).toInt()
+        val wanted = numTrainingLines / BATCH
         return wanted.coerceIn(MIN_STEPS, MAX_STEPS)
     }
+}
+
+/**
+ * Everyday English used to check that a new adapter hasn't made the model worse at normal
+ * text (Stage 2.1 quality check). Each entry is "context|next word".
+ */
+object GeneralEnglishCheck {
+    val LINES: List<String> = listOf(
+        "I am going to the|store", "Can you send me the|link", "What time does the|meeting",
+        "Thank you so much for your|help", "I will be there in ten|minutes", "Let me know if you|need",
+        "Do you want to grab|lunch", "I think we should|go", "How was your|day",
+        "See you|tomorrow", "Sorry I missed your|call", "Happy|birthday",
+        "I don't know what to|do", "It was really nice to|meet", "Could you please|send",
+        "I'm on my|way", "Have a good|night", "That sounds like a good|idea",
+        "Did you see the|game", "I need to go to the|doctor", "We should get|together",
+        "Can we talk|later", "I just got|home", "The weather is really|nice",
+        "Are you free this|weekend", "I'll call you when I|get", "Please let me|know",
+        "I forgot my|phone", "What do you want for|dinner", "Good|morning",
+    )
+
+    /** Reject a new adapter if general English got worse by more than this (avg nats/word). */
+    const val MAX_ALLOWED_DROP = 0.35f
 }
 
 /**

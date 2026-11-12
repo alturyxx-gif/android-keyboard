@@ -110,6 +110,9 @@ namespace latinime {
             if(batch > 0) params.common.n_batch = batch;
             if(threads > 0) params.common.n_threads = threads;
             params.common.warmup = std::max(10, params.common.adam_n_iter / 20);
+            // The original code stopped after 1 epoch, which with a few hundred examples is only
+            // ~15 optimiser steps - far too few to learn anything. Let the step count decide.
+            params.common.n_epochs = -1;
         }
 
         void UpdateHistoryAndCount(std::chrono::system_clock::time_point start, std::chrono::system_clock::time_point end) {

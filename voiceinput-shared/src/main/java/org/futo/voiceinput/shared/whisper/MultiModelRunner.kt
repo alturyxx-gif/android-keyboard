@@ -23,7 +23,12 @@ data class MultiModelRunConfiguration(
 data class DecodingConfiguration(
     val glossary: List<String>,
     val languages: Set<Language>,
-    val suppressSymbols: Boolean
+    val suppressSymbols: Boolean,
+    /**
+     * Stage 1.1: text already in the text box before the cursor. Whisper models use it as
+     * context (names, casing, punctuation style, topic). Other model types ignore it.
+     */
+    val textContext: String = "",
 )
 
 class MultiModelRunner(
@@ -75,6 +80,7 @@ class MultiModelRunner(
                 bailLanguages = bailLanguages,
                 decodingMode = DecodingMode.BeamSearch5,
                 suppressNonSpeechTokens = decodingConfiguration.suppressSymbols,
+                textContext = decodingConfiguration.textContext,
                 partialResultCallback = {
                     callback.partialResult(it)
                 }
@@ -93,6 +99,7 @@ class MultiModelRunner(
                 bailLanguages = arrayOf(),
                 decodingMode = DecodingMode.BeamSearch5,
                 suppressNonSpeechTokens = decodingConfiguration.suppressSymbols,
+                textContext = decodingConfiguration.textContext,
                 partialResultCallback = {
                     callback.partialResult(it)
                 }

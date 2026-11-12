@@ -235,11 +235,16 @@ private fun TrainingRunItem(run: TrainingRunRecord) {
         val pct = ((ratio - 1.0) * 100).roundToInt()
         if (pct >= 0) "test words $pct% more likely" else "test words ${-pct}% less likely"
     } else "quality not measured"
+    val general = if (run.generalBefore != null && run.generalAfter != null) {
+        val ratio = kotlin.math.exp((run.generalAfter - run.generalBefore).toDouble())
+        val pct = ((ratio - 1.0) * 100).roundToInt()
+        " · everyday English ${if (pct >= 0) "+" else ""}$pct%"
+    } else ""
     val status = if (run.accepted) "kept" else "discarded"
 
     SettingItem(
         title = "$date — $status",
-        subtitle = "${run.historyEntries} words, ${run.steps} steps, ${"%.1f".format(run.minutes)} min · $quality" +
+        subtitle = "${run.historyEntries} words, ${run.steps} steps, ${"%.1f".format(run.minutes)} min · $quality$general" +
                 if (run.note.isNotBlank()) "\n${run.note}" else ""
     ) {}
 }

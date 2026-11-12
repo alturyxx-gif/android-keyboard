@@ -396,6 +396,19 @@ android {
         checkReleaseBuilds false
     }
 
+    testOptions {
+        unitTests.returnDefaultValues = true
+        unitTests.all {
+            // Lets WhisperGGMLHostTest load a desktop build of libvoiceinput (optional)
+            def voiceLib = System.getenv('VOICE_HOST_LIB_DIR')
+            if (voiceLib) {
+                systemProperty 'java.library.path', voiceLib
+                environment 'VOICE_HOST_LIB_DIR', voiceLib
+            }
+            testLogging { showStandardStreams = true }
+        }
+    }
+
     aaptOptions {
         noCompress 'dict'
     }

@@ -887,7 +887,9 @@ static std::vector<float> ScoreContinuations(LanguageModelState *state, const st
     std::vector<float> logprobs(n_vocab);
 
     for(size_t c = 0; c < continuations.size(); c++) {
-        token_sequence cont = model->tokenize(trim(continuations[c]));
+        // Trailing space: with this model's inverted-space tokens ("word▁") the last word must be
+        // complete, otherwise it is scored as an unfinished fragment.
+        token_sequence cont = model->tokenize(trim(continuations[c]) + " ");
         if(cont.empty()) { out[c] = 0.0f; continue; }
 
         token_sequence full = base;

@@ -1,0 +1,597 @@
+#include <string>
+#include <cstring>
+#include <chrono>
+#include <cstdio>
+#include <cmath>
+#include <vector>
+#include <map>
+#include <jni.h>
+#include <unistd.h>
+#include "defines.h"
+#include "voiceinput.h"
+#include "jni_common.h"
+#include "transcribe.h"
+#include "transcribe/whisper.h"
+#include "transcribe/parakeet.h"
+#include "transcribe/asr4all.h"
+
+std::string jstring2string(JNIEnv *env, jstring jStr) {
+    if(jStr == nullptr) {
+        AKLOGE("jstring is null!");
+        return "";
+    }
+
+    const jsize stringUtf8Length = env->GetStringUTFLength(jStr);
+    if (stringUtf8Length <= 0) {
+        return "";
+    }
+    char stringChars[stringUtf8Length + 1];
+    env->GetStringUTFRegion(jStr, 0, env->GetStringLength(jStr), stringChars);
+    stringChars[stringUtf8Length] = '\0';
+
+    return {stringChars};
+}
+
+jstring string2jstring(JNIEnv *env, const char *str) {
+    jobject bb = env->NewDirectByteBuffer((void *)str, strlen(str));
+
+    jclass cls_Charset = env->FindClass("java/nio/charset/Charset");
+    jmethodID mid_Charset_forName = env->GetStaticMethodID(cls_Charset, "forName", "(Ljava/lang/String;)Ljava/nio/charset/Charset;");
+    jobject charset = env->CallStaticObjectMethod(cls_Charset, mid_Charset_forName, env->NewStringUTF("UTF-8"));
+
+    jmethodID mid_Charset_decode = env->GetMethodID(cls_Charset, "decode", "(Ljava/nio/ByteBuffer;)Ljava/nio/CharBuffer;");
+    jobject cb = env->CallObjectMethod(charset, mid_Charset_decode, bb);
+    env->DeleteLocalRef(bb);
+
+    jclass cls_CharBuffer = env->FindClass("java/nio/CharBuffer");
+    jmethodID mid_CharBuffer_toString = env->GetMethodID(cls_CharBuffer, "toString", "()Ljava/lang/String;");
+    jstring s = (jstring)env->CallObjectMethod(cb, mid_CharBuffer_toString);
+
+    return s;
+}
+
+struct whisper_context {
+    int x;
+};
+
+struct WhisperModelState {
+    JNIEnv *env = nullptr;
+    struct transcribe_session *session = nullptr;
+
+    volatile int cancel_flag = 0;
+    jobject partial_result_instance;
+    jmethodID partial_result_method;
+
+    size_t ticker = 0;
+    size_t last_partial_emit = 0;
+    size_t last_exit = 0;
+    size_t inference_time = 0;
+    size_t preview_every = 0;
+
+    // FUTO's "acft" models are fine-tuned to work with a shortened audio window; stock
+    // models (e.g. Whisper large-v3-turbo) must use the full 30 s window or quality drops.
+    bool shorten_audio_ctx = false;
+    bool using_gpu = false;
+};
+
+void log_callback(transcribe_log_level level, const char *msg, void *userdata) {
+    if(level >= TRANSCRIBE_LOG_LEVEL_ERROR) {
+        AKLOGE("[transcribe:%d] %s", level, msg);
+    } else {
+        AKLOGI("[transcribe:%d] %s", level, msg);
+    }
+}
+
+bool abort_callback(void* userdata) {
+    auto *state = reinterpret_cast<WhisperModelState *>(userdata);
+    if(state->cancel_flag) {
+        return true;
+    }
+
+    /*
+    if(state->partial_result_instance && state->partial_result_method) {
+        const char* text = transcribe_full_text(state->session);
+        if(text == nullptr) {
+            AKLOGE("No text?");
+        } else if(text[0] == '\0') {
+            AKLOGE("Text is blank?");
+        } else {
+            jstring pjstr = string2jstring(state->env, text);
+            state->env->CallVoidMethod(state->partial_result_instance, state->partial_result_method,
+                                       pjstr);
+            state->env->DeleteLocalRef(pjstr);
+        }
+    }
+    */
+    return false;
+}
+
+static transcribe_status open_session(const std::string &path, transcribe_backend_request backend, int n_threads, struct transcribe_session **out) {
+    struct transcribe_model_load_params mlparams;
+    transcribe_model_load_params_init(&mlparams);
+    mlparams.backend = backend;
+
+    struct transcribe_session_params sparams;
+    transcribe_session_params_init(&sparams);
+    sparams.n_threads = n_threads;
+
+    return transcribe_open(path.c_str(), &mlparams, &sparams, out);
+}
+
+// Keyboard (custom build): openNative(path, useGpu)
+static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboolean use_gpu) {
+    std::string model_dir_str = jstring2string(env, model_dir);
+
+    auto *state = new WhisperModelState();
+
+    AKLOGI("[voice] WhisperGGML_open from %s (gpu=%d)", model_dir_str.c_str(), (int)use_gpu);
+
+    // Big phone cores: use up to 6 threads (S25 Ultra has 8 cores)
+    long num_procs = sysconf(_SC_NPROCESSORS_ONLN) - 2;
+    if(num_procs < 2) num_procs = 2;
+    if(num_procs > 6) num_procs = 6;
+
+    transcribe_status result = TRANSCRIBE_ERR_GGUF;
+    if(use_gpu) {
+        // Stage 1.3: try the GPU (Vulkan) first, fall back to the CPU if it isn't available
+        result = open_session(model_dir_str, TRANSCRIBE_BACKEND_VULKAN, (int)num_procs, &state->session);
+        if(result == TRANSCRIBE_OK && state->session) {
+            state->using_gpu = true;
+        } else {
+            AKLOGE("[voice] GPU open failed (%s), falling back to CPU", transcribe_status_string(result));
+            if(state->session) { transcribe_session_free(state->session); state->session = nullptr; }
+        }
+    }
+
+    if(!state->using_gpu) {
+        result = open_session(model_dir_str, TRANSCRIBE_BACKEND_CPU, (int)num_procs, &state->session);
+    }
+
+    if(!state->session || result != TRANSCRIBE_OK){
+        AKLOGE("Failed to open voice model '%s': %s", model_dir_str.c_str(), transcribe_status_string(result));
+        delete state;
+        return 0L;
+    }
+
+    // FUTO's legacy .bin Whisper models are all "acft" fine-tunes; GGUF models only if named so
+    bool is_gguf = false;
+    if(FILE *f = fopen(model_dir_str.c_str(), "rb")) {
+        char magic[4] = {0};
+        is_gguf = fread(magic, 1, 4, f) == 4 && memcmp(magic, "GGUF", 4) == 0;
+        fclose(f);
+    }
+    state->shorten_audio_ctx = !is_gguf || model_dir_str.find("acft") != std::string::npos;
+
+    transcribe_set_abort_callback(state->session, abort_callback, (void*)state);
+    return reinterpret_cast<jlong>(state);
+}
+
+static std::string narrowLanguageCode(const char *language, struct transcribe_capabilities *capabilities) {
+    size_t len_ref = strlen(language);
+
+    std::string result;
+    bool exact_match = false;
+    for(int i=0; i<capabilities->n_languages; i++) {
+        size_t len_cmp = strlen(capabilities->languages[i]);
+        if(strncmp(capabilities->languages[i], language, std::min(len_ref, len_cmp)) == 0) {
+            if(len_cmp == len_ref) return capabilities->languages[i];
+
+            if(result.empty()) result = capabilities->languages[i];
+        }
+    }
+
+    return result;
+}
+
+static std::string languageArrayToMergedString(JNIEnv *env, jobjectArray languages, struct transcribe_capabilities *capabilities) {
+    std::string language_hint;
+    int num_languages = env->GetArrayLength(languages);
+    for (int i=0; i<num_languages; i++) {
+        jstring jstr = static_cast<jstring>(env->GetObjectArrayElement(languages, i));
+        std::string str = jstring2string(env, jstr);
+
+        std::string narrowed = narrowLanguageCode(str.c_str(), capabilities);
+        if(narrowed.empty() && str == "no") {
+            // we refer to norwegian as "no" but parakeet refers to it by "nb" (Norwegian Bokmål)
+            narrowed = narrowLanguageCode("nb", capabilities);
+        }
+
+        language_hint.append(narrowed);
+        if(i < (num_languages - 1) && !narrowed.empty()) {
+            language_hint.append(",");
+        }
+    }
+
+    return language_hint;
+}
+
+// Keyboard (custom build) signature:
+// inferNative(handle, samples, glossary, textContext, languages, bailLanguages, decodingMode, suppressNonSpeech)
+static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jfloatArray samples_array, jstring prompt, jstring text_context, jobjectArray languages, jobjectArray bail_languages, jint decoding_mode, jboolean suppress_non_speech) {
+    auto *state = reinterpret_cast<WhisperModelState *>(handle);
+    state->cancel_flag = 0;
+
+    struct transcribe_capabilities capabilities;
+    transcribe_capabilities_init(&capabilities);
+    transcribe_model_get_capabilities(transcribe_get_model(state->session), &capabilities);
+
+    std::string language_hint = languageArrayToMergedString(env, languages, &capabilities);
+    std::string bail_language_hint = languageArrayToMergedString(env, bail_languages, &capabilities);
+    std::string prompt_str;
+
+    if(strcmp(transcribe_model_arch_string(transcribe_get_model(state->session)),
+            "parakeet") == 0) {
+        if(language_hint.find(',') != std::string::npos) {
+            AKLOGE("Parakeet/Nemotron do not support multilingual, clearing hint");
+            language_hint = "";
+        }
+    }
+
+    state->env = env;
+    state->partial_result_instance = instance;
+    state->partial_result_method = env->GetMethodID(
+        env->GetObjectClass(instance),
+        "invokePartialResult",
+          "(Ljava/lang/String;)V");
+
+    int num_samples = env->GetArrayLength(samples_array);
+    jfloat *samples = env->GetFloatArrayElements(samples_array, nullptr);
+
+
+    struct transcribe_whisper_run_ext wp;
+
+    struct transcribe_run_params params;
+    transcribe_run_params_init(&params);
+    params.task = TRANSCRIBE_TASK_TRANSCRIBE;
+    params.timestamps = TRANSCRIBE_TIMESTAMPS_NONE;
+    params.language = language_hint.c_str();
+    params.keep_special_tags = false;
+    //params.spec_k_drafts = 0;
+    params.bail_languages = bail_language_hint.c_str();
+
+    if(transcribe_model_accepts_ext_kind(
+            transcribe_get_model(state->session),
+            TRANSCRIBE_EXT_SLOT_RUN,
+            TRANSCRIBE_EXT_KIND_WHISPER_RUN
+    )) {
+        transcribe_whisper_run_ext_init(&wp);
+
+        if(state->shorten_audio_ctx) {
+            wp.audio_ctx = std::max(160, std::min(1500, (int)ceil((double)num_samples / (double)(320.0)) + 32));
+        }
+
+        // The keyboard passes an already formatted glossary, e.g. "(Glossary: FUTO, Zainab)"
+        if(prompt) {
+            prompt_str = jstring2string(env, prompt);
+        }
+
+        // Stage 1.1: the text already in the text box, so names, casing, punctuation style
+        // and topic carry over into the transcription
+        if(text_context) {
+            auto ctx = jstring2string(env, text_context);
+            if(!ctx.empty()) {
+                if(!prompt_str.empty()) prompt_str.append(" ");
+                prompt_str.append(ctx);
+            }
+        }
+
+        if(language_hint == "zh") {
+            prompt_str.append(" [简体]");
+        }
+
+        wp.initial_prompt = prompt_str.c_str();
+        AKLOGI("Initial prompt for [%s]: %s", language_hint.c_str(), prompt_str.c_str());
+
+        params.family = &wp.ext;
+    }
+
+    auto result = transcribe_run(state->session, samples, num_samples, &params);
+    env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
+
+    std::string output;
+    if(result == TRANSCRIBE_ERR_LANG_BAILED) {
+        auto language = transcribe_detected_language(state->session);
+        if(language == nullptr || language[0] == '\0') {
+            AKLOGE("Bailed due to language detection which is null/blank!");
+            return 0;
+        }
+
+        output = "<>CANCELLED<> lang=";
+        output.append(language);
+
+        jstring jstr = string2jstring(env, output.c_str());
+        return jstr;
+    }
+
+    if(result == TRANSCRIBE_ERR_ABORTED) {
+        output = "<>CANCELLED<> flag";
+
+        jstring jstr = string2jstring(env, output.c_str());
+        return jstr;
+    }
+
+    if(result != TRANSCRIBE_OK) {
+        AKLOGE("Failed to run! Status: %s", transcribe_status_string(result));
+        return 0;
+    }
+
+    auto txt = transcribe_full_text(state->session);
+    return string2jstring(env, txt);
+}
+
+static jboolean WhisperGGML_startStream(JNIEnv *env, jobject instance, jlong handle, jstring prompt, jobjectArray languages, jobjectArray bail_languages, jint tier) {
+    auto *state = reinterpret_cast<WhisperModelState *>(handle);
+    state->cancel_flag = 0;
+
+    struct transcribe_capabilities capabilities;
+    transcribe_capabilities_init(&capabilities);
+    transcribe_model_get_capabilities(transcribe_get_model(state->session), &capabilities);
+
+    std::string language_hint = languageArrayToMergedString(env, languages, &capabilities);
+    std::string bail_language_hint = languageArrayToMergedString(env, bail_languages, &capabilities);
+    std::string prompt_str = prompt ? jstring2string(env, prompt) : "";
+
+    if(strcmp(transcribe_model_arch_string(transcribe_get_model(state->session)),
+              "parakeet") == 0) {
+        if(language_hint.find(',') != std::string::npos) {
+            AKLOGE("Parakeet/Nemotron do not support multilingual, clearing hint");
+            language_hint = "";
+        }
+    }
+
+    state->env = env;
+    state->partial_result_instance = instance;
+    state->partial_result_method = env->GetMethodID(
+            env->GetObjectClass(instance),
+            "invokePartialResult",
+            "(Ljava/lang/String;)V");
+
+    struct transcribe_asr4all_stream_ext a4ap;
+    struct transcribe_parakeet_stream_ext pkp;
+
+    struct transcribe_stream_params s_params;
+    struct transcribe_run_params r_params;
+    transcribe_stream_params_init(&s_params);
+    transcribe_run_params_init(&r_params);
+
+    r_params.task = TRANSCRIBE_TASK_TRANSCRIBE;
+    r_params.timestamps = TRANSCRIBE_TIMESTAMPS_NONE;
+    r_params.language = language_hint.c_str();
+    r_params.keep_special_tags = false;
+    r_params.bail_languages = bail_language_hint.c_str();
+
+    if(transcribe_model_accepts_ext_kind(
+            transcribe_get_model(state->session),
+            TRANSCRIBE_EXT_SLOT_STREAM,
+            TRANSCRIBE_EXT_KIND_ASR4ALL_STREAM
+    )) {
+        transcribe_asr4all_stream_ext_init(&a4ap);
+
+        a4ap.custom_dictionary = prompt_str.empty() ? NULL : prompt_str.c_str();
+
+        if(tier <= 0) {
+            a4ap.commit_frames = 16;
+            a4ap.right_ctx_frames = 4;
+            state->preview_every = 2000;
+        } else if(tier == 1) {
+            a4ap.commit_frames = 32;
+            a4ap.right_ctx_frames = 8;
+            state->preview_every = 4000;
+        } else if(tier >= 2) {
+            a4ap.commit_frames = 64;
+            a4ap.right_ctx_frames = 16;
+            state->preview_every = 8000;
+        } /*else {
+            a4ap.commit_frames = 512;
+            a4ap.right_ctx_frames = 32;
+            a4ap.lookahead_frames = 162;
+
+            if(tier == 1) a4ap.commit_frames = 128;
+            if(tier == 2) a4ap.commit_frames = 256;
+        }*/
+
+        s_params.family = &a4ap.ext;
+    }else if(transcribe_model_accepts_ext_kind(
+            transcribe_get_model(state->session),
+            TRANSCRIBE_EXT_SLOT_STREAM,
+            TRANSCRIBE_EXT_KIND_PARAKEET_STREAM
+    )) {
+        transcribe_parakeet_stream_ext_init(&pkp);
+
+        // att_context_right = 0 doesn't really run on mobile
+        if(tier <= 0) {
+            if(strcmp(transcribe_model_variant_string(transcribe_get_model(state->session)), "nemotron-3.5-asr-streaming-0.6b") == 0) {
+                pkp.att_context_right = 3;
+            } else {
+                pkp.att_context_right = 1;
+            }
+        } else if(tier == 1) {
+            pkp.att_context_right = 6;
+        } else {
+            pkp.att_context_right = 13;
+        }
+
+        state->preview_every = 0;
+
+        s_params.family = &pkp.ext;
+    }
+
+    //AKLOGE("variant is %s", transcribe_model_variant_string(transcribe_get_model(state->session)));
+
+    state->ticker = 0;
+    state->inference_time = 0;
+
+    auto result = transcribe_stream_begin(state->session, &r_params, &s_params) == TRANSCRIBE_OK;
+    if(!result && a4ap.custom_dictionary != NULL && s_params.family == &a4ap.ext) {
+        // needs updated gguf
+        AKLOGE("Failed to start stream with custom dictionary. Retrying with it cleared.");
+        a4ap.custom_dictionary = NULL;
+        result = transcribe_stream_begin(state->session, &r_params, &s_params) == TRANSCRIBE_OK;
+        if(!result) {
+            AKLOGE("Failed anyway.");
+        }
+    }
+
+    return result;
+}
+
+static jboolean WhisperGGML_feedStream(JNIEnv *env, jobject instance, jlong handle, jfloatArray samples_array) {
+    auto *state = reinterpret_cast<WhisperModelState *>(handle);
+    state->cancel_flag = 0;
+
+    state->env = env;
+    state->partial_result_instance = instance;
+    state->partial_result_method = env->GetMethodID(
+            env->GetObjectClass(instance),
+            "invokePartialResult",
+            "(Ljava/lang/String;)V");
+
+    int num_samples = env->GetArrayLength(samples_array);
+    jfloat *samples = env->GetFloatArrayElements(samples_array, nullptr);
+
+    auto t0 = duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    bool is_ahead = (state->last_exit - t0) > ((num_samples / 16) * 3 / 2);
+
+    transcribe_status status;
+    struct transcribe_stream_update result;
+    transcribe_stream_update_init(&result);
+    if((status = transcribe_stream_feed(state->session, samples, num_samples, &result)) != TRANSCRIBE_OK) {
+        AKLOGE("stream feed failed! %s", transcribe_status_string(status));
+        return false;
+    }
+
+    auto t1 = duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+
+    bool preview = (state->preview_every > 0) && (state->ticker - state->last_partial_emit) > state->preview_every;
+    if(is_ahead && preview && (status = transcribe_stream_feed(state->session, nullptr, 0, &result)) != TRANSCRIBE_OK) {
+        AKLOGE("stream tail feed failed! %s", transcribe_status_string(status));
+        // non critical
+    }
+
+    if(preview) state->last_partial_emit = state->ticker;
+    state->ticker += num_samples;
+
+    auto t2 = duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    struct transcribe_stream_text text_result;
+    transcribe_stream_text_init(&text_result);
+    if ((status = transcribe_stream_get_text(state->session, &text_result)) != TRANSCRIBE_OK) {
+        AKLOGE("stream get_text failed! %s", transcribe_status_string(status));
+        return false;
+    }
+
+
+    auto t3 = duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    //AKLOGI("[%d] processed %d samples in %d ms + %d ms + %d ms (%s)", state->ticker, num_samples, (int)(t1-t0), (int)(t2-t1), (int)(t3-t1), preview ? "previewed" : "no");
+
+    if (text_result.full_text != nullptr) {
+        jstring pjstr = string2jstring(env, text_result.full_text);
+        state->env->CallVoidMethod(state->partial_result_instance, state->partial_result_method,
+                                   pjstr);
+        state->env->DeleteLocalRef(pjstr);
+    }
+
+    state->last_exit = duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    state->inference_time += state->last_exit - t0;
+
+    double xRT = (((double)state->ticker) / 16.0) / ((double)(state->inference_time));
+    //AKLOGI("xRT = %.2f txt=[%s]", (float)xRT, text_result.full_text);
+    if(xRT < 0.8 && (state->ticker > 32000)) {
+        AKLOGE("Falling back to offline.");
+        std::string s = text_result.full_text;
+        s.append(" [...]");
+        jstring pjstr = string2jstring(env, s.c_str());
+        state->env->CallVoidMethod(state->partial_result_instance, state->partial_result_method, pjstr);
+        state->env->DeleteLocalRef(pjstr);
+        return false;
+    }
+
+    return true;
+}
+
+static jstring WhisperGGML_stopStream(JNIEnv *env, jobject instance, jlong handle, jboolean finalize) {
+    auto *state = reinterpret_cast<WhisperModelState *>(handle);
+    state->cancel_flag = 0;
+    state->env = env;
+
+    if(!finalize) {
+        transcribe_stream_reset(state->session);
+        return nullptr;
+    }
+
+    transcribe_status status;
+    struct transcribe_stream_update result;
+    transcribe_stream_update_init(&result);
+    if((status = transcribe_stream_finalize(state->session, &result)) != TRANSCRIBE_OK) {
+        AKLOGE("stream finalize failed! %s", transcribe_status_string(status));
+        return nullptr;
+    }
+
+    struct transcribe_stream_text text_result;
+    transcribe_stream_text_init(&text_result);
+    if((status = transcribe_stream_get_text(state->session, &text_result)) != TRANSCRIBE_OK) {
+        AKLOGE("stream get_text failed! %s", transcribe_status_string(status));
+        return nullptr;
+    }
+
+    jstring pjstr = string2jstring(state->env, text_result.full_text);
+    return pjstr;
+}
+
+
+static void WhisperGGML_close(JNIEnv *env, jclass clazz, jlong handle) {
+    auto *state = reinterpret_cast<WhisperModelState *>(handle);
+    if(!state) return;
+
+    transcribe_session_free(state->session);
+
+    delete state;
+}
+
+static jboolean WhisperGGML_isUsingGpu(JNIEnv *env, jclass clazz, jlong handle) {
+    auto *state = reinterpret_cast<WhisperModelState *>(handle);
+    return (state && state->using_gpu) ? JNI_TRUE : JNI_FALSE;
+}
+
+static void WhisperGGML_cancel(JNIEnv *env, jclass clazz, jlong handle) {
+    auto *state = reinterpret_cast<WhisperModelState *>(handle);
+    state->cancel_flag = 1;
+}
+
+static const JNINativeMethod sMethods[] = {
+        {
+                const_cast<char *>("openNative"),
+                const_cast<char *>("(Ljava/lang/String;Z)J"),
+                reinterpret_cast<void *>(WhisperGGML_open)
+        },
+        {
+                const_cast<char *>("inferNative"),
+                const_cast<char *>("(J[FLjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;IZ)Ljava/lang/String;"),
+                reinterpret_cast<void *>(WhisperGGML_infer)
+        },
+        {
+                const_cast<char *>("isUsingGpuNative"),
+                const_cast<char *>("(J)Z"),
+                reinterpret_cast<void *>(WhisperGGML_isUsingGpu)
+        },
+        {
+                const_cast<char *>("cancelNative"),
+                const_cast<char *>("(J)V"),
+                reinterpret_cast<void *>(WhisperGGML_cancel)
+        },
+        {
+                const_cast<char *>("closeNative"),
+                const_cast<char *>("(J)V"),
+                reinterpret_cast<void *>(WhisperGGML_close)
+        }
+};
+
+int register_WhisperGGML(JNIEnv *env) {
+    transcribe_log_set(log_callback, nullptr);
+
+    const char *const kClassPathName = "org/futo/voiceinput/shared/ggml/WhisperGGML";
+    return registerNativeMethods(env, kClassPathName, sMethods, NELEMS(sMethods));
+}

@@ -46,6 +46,12 @@ if(EXT_BUILD_ASAN)
     add_link_options(-fsanitize=address)
 endif()
 
+# Custom build: use the ARMv8.2 dot-product/fp16 instructions for the typing model on
+# 64-bit ARM (all flagship phones since 2018, including the S25 Ultra)
+if(${ANDROID_ABI} MATCHES "arm64-v8a")
+    add_compile_options(-march=armv8.2-a+dotprod+fp16)
+endif()
+
 # Enable NEON unconditionally (same as LOCAL_ARM_NEON := true)
 if(${ANDROID_ABI} MATCHES "armeabi-v7a")
     add_compile_options(-mfpu=neon)

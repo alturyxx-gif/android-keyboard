@@ -73,3 +73,22 @@ val ANIMATE_BUBBLE = SettingsKey(
     key = booleanPreferencesKey("animate_bubble"),
     default = true
 )
+
+// ---- Custom build voice settings ----
+
+/** Stage 1.1: give the speech model the text already in the text box as context. */
+val VOICE_USE_TEXT_CONTEXT = SettingsKey(
+    booleanPreferencesKey("voice_use_text_context"),
+    true
+)
+
+/**
+ * Stage 1.3: run the speech model on the GPU (Vulkan), falling back to CPU.
+ * NOTE: this build is CPU-only (the Vulkan backend needs the Khronos Vulkan C++ headers, which
+ * could not be added in the build environment). With a CPU-only engine this setting simply
+ * falls back to the CPU, so it is off by default.
+ */
+val VOICE_USE_GPU = SettingsKey(
+    booleanPreferencesKey("voice_use_gpu"),
+    false
+)

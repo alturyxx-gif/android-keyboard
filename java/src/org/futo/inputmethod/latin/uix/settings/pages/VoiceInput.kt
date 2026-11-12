@@ -168,6 +168,18 @@ val VoiceInputMenu = UserSettingsMenu(
         ).copy(visibilityCheck = visibilityCheckNotSystemVoiceInput),
 
         userSettingToggleDataStore(
+            title = R.string.voice_use_text_context_title,
+            subtitle = R.string.voice_use_text_context_subtitle,
+            setting = org.futo.inputmethod.latin.uix.VOICE_USE_TEXT_CONTEXT
+        ).copy(visibilityCheck = visibilityCheckNotSystemVoiceInput),
+
+        userSettingToggleDataStore(
+            title = R.string.voice_use_gpu_title,
+            subtitle = R.string.voice_use_gpu_subtitle,
+            setting = org.futo.inputmethod.latin.uix.VOICE_USE_GPU
+        ).copy(visibilityCheck = visibilityCheckNotSystemVoiceInput),
+
+        userSettingToggleDataStore(
             title = R.string.voice_input_settings_animate_bubble,
             subtitle = R.string.voice_input_settings_animate_bubble_subtitle,
             setting = ANIMATE_BUBBLE

@@ -54,6 +54,10 @@ import org.futo.voiceinput.shared.RecognizerViewSettings
 import org.futo.voiceinput.shared.RecordingSettings
 import org.futo.voiceinput.shared.SoundPlayer
 import org.futo.voiceinput.shared.types.Language
+import org.futo.voiceinput.shared.ggml.VoiceEngineSettings
+import org.futo.inputmethod.latin.uix.VOICE_USE_GPU
+import org.futo.inputmethod.latin.uix.VOICE_USE_TEXT_CONTEXT
+import androidx.core.view.inputmethod.EditorInfoCompat
 import org.futo.voiceinput.shared.types.ModelLoader
 import org.futo.voiceinput.shared.types.getLanguageFromWhisperString
 import org.futo.voiceinput.shared.ui.MicrophoneDeviceState
@@ -120,7 +124,36 @@ private class VoiceInputActionWindow(
     val context = manager.getContext()
 
     private var shouldPlaySounds: Boolean = false
+
+    /**
+     * Stage 1.1: the last ~300 characters before the cursor, trimmed to whole words.
+     * Never read from password or other sensitive fields.
+     */
+    private fun readTextContext(): String = try {
+        val ime = manager.getLatinIMEForDebug()
+        val editorInfo = ime.currentInputEditorInfo
+        val variation = (editorInfo?.inputType ?: 0) and android.text.InputType.TYPE_MASK_VARIATION
+        val cls = (editorInfo?.inputType ?: 0) and android.text.InputType.TYPE_MASK_CLASS
+        val isPassword = cls == android.text.InputType.TYPE_CLASS_TEXT && (
+                variation == android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                variation == android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+                variation == android.text.InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD) ||
+                cls == android.text.InputType.TYPE_CLASS_NUMBER &&
+                variation == android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        val noLearning = ((editorInfo?.imeOptions ?: 0) and EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
+        if(isPassword || noLearning) "" else {
+            val text = ime.currentInputConnection?.getTextBeforeCursor(300, 0)?.toString() ?: ""
+            val trimmed = if(text.length >= 300) text.substringAfter(' ', text) else text
+            trimmed.trim()
+        }
+    } catch(e: Exception) {
+        ""
+    }
+
     private fun loadSettings(): RecognizerViewSettings {
+        VoiceEngineSettings.useGpu = context.getSetting(VOICE_USE_GPU)
+        VoiceEngineSettings.gpuCrashMarker = java.io.File(context.noBackupFilesDir, "voice_gpu_attempt")
+
         val enableSound = context.getSetting(ENABLE_SOUND)
         val verboseFeedback = false//context.getSetting(VERBOSE_PROGRESS)
         val disallowSymbols = context.getSetting(DISALLOW_SYMBOLS)
@@ -153,7 +186,8 @@ private class VoiceInputActionWindow(
             decodingConfiguration = DecodingConfiguration(
                 glossary = glossary,
                 languages = allowedLanguages,
-                suppressSymbols = disallowSymbols
+                suppressSymbols = disallowSymbols,
+                textContext = if(context.getSetting(VOICE_USE_TEXT_CONTEXT)) readTextContext() else ""
             ),
             recordingConfiguration = RecordingSettings(
                 preferBluetoothMic = useBluetoothAudio,

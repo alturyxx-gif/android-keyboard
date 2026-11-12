@@ -508,7 +508,16 @@ fun determineFileKind(inputStream: InputStream): FileKindAndInfo {
 
     return when {
         magic == voiceInputMagic -> FileKindAndInfo(FileKind.VoiceInput, null, null)
-        magic == transformerMagic -> FileKindAndInfo(FileKind.Transformer, null, null)
+        // Custom build: GGUF is used both by the typing model and by the newer voice models
+        // (Whisper large-v3-turbo, Parakeet, Nemotron, ...). Tell them apart by architecture.
+        magic == transformerMagic -> {
+            val arch = GgufInfo.readArchitecture(inputStream, alreadyReadMagic = true)
+            if(GgufInfo.isTextModel(arch)) {
+                FileKindAndInfo(FileKind.Transformer, null, null)
+            } else {
+                FileKindAndInfo(FileKind.VoiceInput, null, null)
+            }
+        }
         magic == mozcMagic -> {
             FileKindAndInfo(
                 FileKind.Dictionary,

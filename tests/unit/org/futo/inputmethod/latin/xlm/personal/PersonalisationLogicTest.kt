@@ -124,6 +124,8 @@ class TrainingPlanTest {
         assertEquals(TrainingPlan.MIN_STEPS, TrainingPlan.steps(10))
         assertEquals(TrainingPlan.MAX_STEPS, TrainingPlan.steps(1_000_000))
         assertTrue(TrainingPlan.steps(2000) > TrainingPlan.steps(500))
+        // About one pass over the data
+        assertEquals(250, TrainingPlan.steps(1000))
     }
 }
 

@@ -22,6 +22,9 @@ data class TrainingRunRecord(
     /** Average log-probability per held-out word before / after training (higher is better). */
     val heldOutBefore: Float? = null,
     val heldOutAfter: Float? = null,
+    /** Average log-probability on everyday English: plain base model vs. with the new adapter. */
+    val generalBefore: Float? = null,
+    val generalAfter: Float? = null,
     /** True if the new adapter was kept, false if it was rejected because it made things worse. */
     val accepted: Boolean = true,
     val note: String = "",
