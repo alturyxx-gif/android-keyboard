@@ -161,8 +161,41 @@ static transcribe_status open_session(const std::string &path, transcribe_backen
 }
 
 // Keyboard (custom build): openNative(path, useGpu)
-static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboolean use_gpu) {
+// Loads ggml's backend modules (CPU, and the optional OpenCL GPU module) once. With
+// GGML_BACKEND_DL even the CPU backend is a module, so this must run before any model opens.
+// First try the folder libtranscribe.so lives in; if that finds no devices, use the app's
+// native library folder passed from Kotlin.
+static std::string g_backend_init_log;
+static void ensure_backends(const std::string &native_lib_dir) {
+    static std::mutex m;
+    static bool done = false;
+    std::lock_guard<std::mutex> lock(m);
+    if(done && transcribe_backend_device_count() > 0) return;
+
+    engine_log_start();
+    transcribe_init_backends_default();
+    if(transcribe_backend_device_count() == 0 && !native_lib_dir.empty()) {
+        transcribe_init_backends(native_lib_dir.c_str());
+    }
+    g_backend_init_log = engine_log_take();
+    done = true;
+    AKLOGI("[voice] %d compute device(s) available", transcribe_backend_device_count());
+}
+
+// True if the model's main compute device is a GPU (asks the device, not the backend name:
+// the name can be empty until the first run).
+static bool session_on_gpu(struct transcribe_session *session) {
+    if(!session) return false;
+    struct transcribe_backend_device dev;
+    transcribe_backend_device_init(&dev);
+    if(transcribe_model_get_device(transcribe_get_model(session), &dev) != TRANSCRIBE_OK) return false;
+    return dev.device_type == TRANSCRIBE_DEVICE_TYPE_GPU || dev.device_type == TRANSCRIBE_DEVICE_TYPE_IGPU;
+}
+
+// Keyboard (custom build): openNative(path, useGpu, nativeLibDir)
+static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboolean use_gpu, jstring native_lib_dir) {
     std::string model_dir_str = jstring2string(env, model_dir);
+    ensure_backends(native_lib_dir ? jstring2string(env, native_lib_dir) : "");
 
     auto *state = new WhisperModelState();
 
@@ -176,19 +209,25 @@ static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboo
     transcribe_status result = TRANSCRIBE_ERR_GGUF;
     if(use_gpu) engine_log_start();
     if(use_gpu) {
-        // Stage 1.3: try the GPU (Vulkan) first, fall back to the CPU if it isn't available
-        result = open_session(model_dir_str, TRANSCRIBE_BACKEND_VULKAN, (int)num_procs, &state->session);
-        if(result == TRANSCRIBE_OK && state->session) {
+        // Stage 1.3: try the GPU first (AUTO picks the OpenCL GPU device when its module
+        // loaded), fall back to the CPU if no GPU is available
+        result = open_session(model_dir_str, TRANSCRIBE_BACKEND_AUTO, (int)num_procs, &state->session);
+        if(result == TRANSCRIBE_OK && state->session && session_on_gpu(state->session)) {
             state->using_gpu = true;
+        } else if(result == TRANSCRIBE_OK && state->session) {
+            // Opened fine but on the CPU: no usable GPU device (e.g. OpenCL driver not available)
+            state->gpu_log = g_backend_init_log + engine_log_take();
+            state->last_error = "No GPU available (OpenCL driver could not be loaded), used CPU";
         } else {
             AKLOGE("[voice] GPU open failed (%s), falling back to CPU", transcribe_status_string(result));
-            state->gpu_log = engine_log_take();
+            state->gpu_log = g_backend_init_log + engine_log_take();
             state->last_error = std::string("GPU could not start (") + transcribe_status_string(result) + "), used CPU";
             if(state->session) { transcribe_session_free(state->session); state->session = nullptr; }
         }
     }
 
-    if(!state->using_gpu) {
+    if(!state->session) {
+        // (If AUTO already landed on the CPU above, that session is reused.)
         result = open_session(model_dir_str, TRANSCRIBE_BACKEND_CPU, (int)num_procs, &state->session);
     }
 
@@ -352,7 +391,7 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
             state->last_error += " (GPU attempt took " + std::to_string(gpu_ms) + " ms)";
             AKLOGE("[voice] %s", state->last_error.c_str());
 
-            state->gpu_log = engine_log_take();
+            state->gpu_log = g_backend_init_log + engine_log_take();
             transcribe_session_free(state->session);
             state->session = nullptr;
             state->using_gpu = false;
@@ -368,7 +407,7 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
         }
     }
     env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
-    if(attempted_gpu && state->gpu_log.empty()) state->gpu_log = engine_log_take();
+    if(attempted_gpu && state->gpu_log.empty()) state->gpu_log = g_backend_init_log + engine_log_take();
 
     std::string output;
     if(result == TRANSCRIBE_ERR_LANG_BAILED) {
@@ -660,7 +699,7 @@ static void WhisperGGML_cancel(JNIEnv *env, jclass clazz, jlong handle) {
 static const JNINativeMethod sMethods[] = {
         {
                 const_cast<char *>("openNative"),
-                const_cast<char *>("(Ljava/lang/String;Z)J"),
+                const_cast<char *>("(Ljava/lang/String;ZLjava/lang/String;)J"),
                 reinterpret_cast<void *>(WhisperGGML_open)
         },
         {

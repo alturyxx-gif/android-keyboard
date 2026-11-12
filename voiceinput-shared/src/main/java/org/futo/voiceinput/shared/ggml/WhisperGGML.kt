@@ -41,6 +41,9 @@ object VoiceEngineSettings {
      */
     @Volatile var gpuFailedMarker: File? = null
 
+    /** The app's native library folder (where the optional GPU module lives). */
+    @Volatile var nativeLibDir: String = ""
+
     /** One-line summary of the last voice run, shown in Voice Input settings. */
     @Volatile var diagnosticsFile: File? = null
 
@@ -91,7 +94,7 @@ class WhisperGGML(
         }
 
         if (tryGpu) try { marker?.writeText("gpu") } catch (_: Exception) { }
-        handle = openNative(file.absolutePath, tryGpu)
+        handle = openNative(file.absolutePath, tryGpu, VoiceEngineSettings.nativeLibDir)
         if (handle != 0L) isUsingGpu = isUsingGpuNative(handle)
         if (tryGpu && !isUsingGpu && gpuNote.isEmpty()) gpuNote = "GPU not available, used CPU"
         if (!isUsingGpu) try { marker?.delete() } catch (_: Exception) { }
@@ -185,7 +188,7 @@ class WhisperGGML(
         handle = 0L
     }
 
-    private external fun openNative(path: String, useGpu: Boolean): Long
+    private external fun openNative(path: String, useGpu: Boolean, nativeLibDir: String): Long
     private external fun inferNative(handle: Long, samples: FloatArray, prompt: String, textContext: String, languages: Array<String>, bailLanguages: Array<String>, decodingMode: Int, suppressNonSpeechTokens: Boolean): String?
     private external fun isUsingGpuNative(handle: Long): Boolean
     private external fun lastErrorNative(handle: Long): String?

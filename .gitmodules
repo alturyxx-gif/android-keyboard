@@ -22,9 +22,6 @@
 [submodule "voiceinput-shared/src/main/cpp/transcribe.cpp"]
 	path = voiceinput-shared/src/main/cpp/transcribe.cpp
 	url = https://gitlab.futo.org/keyboard/transcribe.cpp.git
-[submodule "voiceinput-shared/src/main/cpp/Vulkan-Headers"]
-	path = voiceinput-shared/src/main/cpp/Vulkan-Headers
-	url = https://github.com/KhronosGroup/Vulkan-Headers.git
-[submodule "voiceinput-shared/src/main/cpp/SPIRV-Headers"]
-	path = voiceinput-shared/src/main/cpp/SPIRV-Headers
-	url = https://github.com/KhronosGroup/SPIRV-Headers.git
+[submodule "voiceinput-shared/src/main/cpp/OpenCL-Headers"]
+	path = voiceinput-shared/src/main/cpp/OpenCL-Headers
+	url = https://github.com/KhronosGroup/OpenCL-Headers.git

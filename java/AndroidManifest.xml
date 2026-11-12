@@ -44,6 +44,11 @@
          android:enableOnBackInvokedCallback="true"
          android:name=".CrashLoggingApplication">
 
+        <!-- Custom build: lets the optional GPU voice engine use the phone's own OpenCL driver
+             (Qualcomm Adreno). Not required: without it voice input runs on the CPU. -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+
+
         <!-- Services -->
         <service android:name=".LatinIME"
              android:label="@string/english_ime_name"

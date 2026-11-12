@@ -25,10 +25,6 @@
 jint JNI_OnLoad(JavaVM *vm, void *reserved) {
     JNIEnv *env = nullptr;
 
-    // Custom build: on the Adreno 830 (S25 Ultra) the Vulkan backend's fp16 path produced
-    // garbage encoder output with Parakeet ("decoder: 22 iters, 0 tokens"). Force full fp32
-    // precision on the GPU. Must be set before the Vulkan device is first initialised.
-    setenv("GGML_VK_DISABLE_F16", "1", 0);
 
     if (vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
         AKLOGE("ERROR: GetEnv failed");
