@@ -1,5 +1,6 @@
 #include <string>
 #include <cstring>
+#include <sys/stat.h>
 #include <atomic>
 #include <deque>
 #include <mutex>
@@ -185,6 +186,28 @@ static transcribe_status open_session(const std::string &path, transcribe_backen
 }
 
 // Keyboard (custom build): openNative(path, useGpu)
+// From libvoice_opencl_shim.so (Android builds with the GPU engine); weak so desktop test
+// builds without the shim still link.
+extern "C" void voice_opencl_cache_stats(int *hits, int *compiles, int *writes, int *bad) __attribute__((weak));
+
+// Compiled GPU programs are cached next to the GPU log (in the app's no-backup files dir), so
+// the ~5 s kernel compile happens once instead of on every model load.
+static void set_gpu_program_cache_dir(const std::string &gpu_log_path) {
+    auto slash = gpu_log_path.find_last_of('/');
+    if(slash == std::string::npos) return;
+    std::string dir = gpu_log_path.substr(0, slash) + "/opencl_cache";
+    mkdir(dir.c_str(), 0700);
+    setenv("VOICE_CL_CACHE_DIR", dir.c_str(), 1);
+}
+
+static std::string gpu_cache_summary() {
+    if(!voice_opencl_cache_stats) return "";
+    int hits = 0, compiles = 0, writes = 0, bad = 0;
+    voice_opencl_cache_stats(&hits, &compiles, &writes, &bad);
+    return "GPU programs: " + std::to_string(hits) + " loaded from cache, " + std::to_string(compiles) +
+           " compiled" + (bad ? ", " + std::to_string(bad) + " stale cache entries replaced" : std::string());
+}
+
 // Loads ggml's backend modules (CPU, and the optional OpenCL GPU module) once. With
 // GGML_BACKEND_DL even the CPU backend is a module, so this must run before any model opens.
 // First try the folder libtranscribe.so lives in; if that finds no devices, use the app's
@@ -220,7 +243,9 @@ static bool session_on_gpu(struct transcribe_session *session) {
 static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboolean use_gpu, jstring native_lib_dir, jstring gpu_log_path) {
     std::string model_dir_str = jstring2string(env, model_dir);
     if(use_gpu) {
-        gpu_log_file_open(gpu_log_path ? jstring2string(env, gpu_log_path) : "");
+        std::string log_path = gpu_log_path ? jstring2string(env, gpu_log_path) : "";
+        gpu_log_file_open(log_path);
+        set_gpu_program_cache_dir(log_path);
         gpu_step("loading backends");
     }
     ensure_backends(native_lib_dir ? jstring2string(env, native_lib_dir) : "");
@@ -244,6 +269,7 @@ static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboo
         if(result == TRANSCRIBE_OK && state->session && session_on_gpu(state->session)) {
             state->using_gpu = true;
             gpu_step("model opened on GPU");
+            { std::string c = gpu_cache_summary(); if(!c.empty()) gpu_step(c.c_str()); }
         } else if(result == TRANSCRIBE_OK && state->session) {
             // Opened fine but on the CPU: no usable GPU device (e.g. OpenCL driver not available)
             state->gpu_log = g_backend_init_log + engine_log_take();

@@ -184,6 +184,13 @@ val VoiceInputMenu = UserSettingsMenu(
             setting = org.futo.inputmethod.latin.uix.VOICE_USE_GPU
         ).copy(visibilityCheck = visibilityCheckNotSystemVoiceInput),
 
+        userSettingNavigationItem(
+            title = R.string.voice_power_test_title,
+            subtitle = R.string.voice_power_test_subtitle,
+            style = NavigationItemStyle.HomeTertiary,
+            navigateTo = "voicePowerTest"
+        ).copy(visibilityCheck = visibilityCheckNotSystemVoiceInput),
+
         // Custom build: details of the last voice run (model, GPU/CPU, timings, errors)
         userSettingDecorationOnly {
             val context = androidx.compose.ui.platform.LocalContext.current
