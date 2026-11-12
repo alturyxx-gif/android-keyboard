@@ -36,23 +36,29 @@ Both APKs are signed with the debug key from the repo, not FUTO's key. That's wh
 |---|---|---|
 | 1.1 Text already in the box as context | Done, tested | Whisper models get the last ~300 characters before the cursor as context. This helps names, punctuation, casing and topic. Never used in password or "no learning" fields. Setting: *Voice Input → Use the text you've already typed*. |
 | 1.2 Whisper large-v3-turbo | Done, tested with the real file | Import the GGUF (see §4) and it's used as the voice model. The import screen now recognises voice GGUFs, which it previously mistook for typing models. |
-| 1.3 Newer engine + GPU | Engine done and tested; **GPU not included** | See below. |
+| 1.3 Newer engine + GPU | Done. GPU tested on your phone: **about half the energy of the CPU with Parakeet** | See below and §8. |
 
 **Engine (1.3)**
 - The keyboard's voice input now runs on **transcribe.cpp**, the engine FUTO's newer standalone Voice Input app uses, instead of the old whisper.cpp copy. The voice screen looks and works the same.
 - Besides Whisper, the new engine can run **Parakeet, Nemotron, Moonshine and FUTO's asr4all** GGUF models.
 - I turned on the ARM "dot-product" CPU instructions. Your phone has them, and they make the speech model and the typing model noticeably faster.
 
-**GPU (1.3)** (added in a follow-up after your approval)
-- The keyboard's speech engine is now built **with the Vulkan GPU backend**.
-  - It uses two pinned Khronos submodules: `Vulkan-Headers` v1.4.368 and `SPIRV-Headers` vulkan-sdk-1.4.363.0.
-  - Shaders are compiled with the NDK's `glslc`.
-- The setting *Voice Input → Use the GPU for voice input* is **off by default, so turn it on to try it**. Reasons:
-  - The GPU path couldn't be tested here.
-  - Vulkan on phone GPUs (Adreno) sometimes gives wrong output or runs slower than the CPU for some model types.
-- If voice input crashes on the GPU, the next attempt automatically goes back to the CPU.
-- If transcripts look wrong or it feels slower, just turn the setting off again.
-- Side effect: the GPU library is linked against Android 9+ Vulkan, so this custom build's voice input needs Android 9 or newer. Your phone is fine.
+**GPU (1.3)** (worked out together with you after the first build; full story in §8)
+- The keyboard's speech engine runs on the phone's GPU through **OpenCL**, using ggml's general OpenCL programs.
+  - Vulkan was tried first and dropped: it returned empty text on your Adreno 830.
+  - Qualcomm's specially tuned programs are switched off: one of them crashes the phone's GPU compiler.
+- **Measured on your S25 Ultra with Parakeet:**
+  - The GPU uses **about 50–60% less energy** per transcription than the CPU.
+  - It's slightly faster: ~1.1 s versus ~1.3 s for 11 s of speech.
+  - It gives identical text.
+- **Only Parakeet-type models use the GPU.** Whisper models gave wrong text on it, so they always run on the CPU, whatever the setting says.
+- **Compiled once, then cached.** The GPU programs are saved after the first compile, so the ~5 s first-run freeze shouldn't come back.
+- **Safety nets:**
+  - Empty GPU output is redone on the CPU.
+  - A GPU crash makes the next run use the CPU.
+  - "Last voice input run" in Voice Input settings shows what happened.
+- **The OpenCL driver is your phone's own Qualcomm one.** It's loaded through a small shim library; if a phone doesn't provide it, voice input just runs on the CPU.
+- One extra Khronos submodule was added (with your approval): `OpenCL-Headers` v2026.05.29, header files only.
 - The standalone Voice Input app is still CPU-only.
 
 **Voice Input app**
@@ -114,18 +120,23 @@ So the only learning on your phone has been the older word-history dictionary. T
 
 I couldn't run the apps on a phone, so testing happened on this machine, mostly against the **real models**.
 
-**Unit tests (JVM): 49 tests, all passing**
+**Unit tests (JVM): 58 tests, all passing**
 - Grammar checker logic (13 tests): fixes, confidence levels, capitalisation, sentence boundaries, last-word caution, Roman Urdu skipping, rejected fixes not coming back.
 - Confusion sets (3 tests) and Roman Urdu detection (4 tests).
 - Personalisation logic (18 tests): retention, weighting, long context, typo pairs, undone autocorrect, Roman Urdu exclusion, held-out split, training size, instant memory, Roman Urdu vocabulary and protection.
 - GGUF reader (4 tests): typing model vs voice model detection.
-- **Real voice engine** (7 tests): the keyboard's actual `WhisperGGML` class and engine built for this machine.
+- Power-test maths (7 tests): unit detection, idle subtraction, combining rounds, detecting wrong GPU transcripts.
+- **Real voice engine** (9 tests): the keyboard's actual `WhisperGGML` class and engine built for this machine.
   - FUTO's built-in model transcribed the JFK "ask not what your country…" recording correctly.
   - Text context worked: the output picked up the comma from the context.
   - GPU request falls back to the CPU, a previous GPU crash forces the CPU, and an invalid model is rejected.
   - **Whisper large-v3-turbo** transcribed it correctly in 26.9 s on this machine's CPU.
   - **NVIDIA Parakeet TDT 0.6B v2** transcribed it correctly in **2.2 s**, with perfect punctuation.
   - Both files are the exact ones in §4.
+  - The GPU rule reads each file's header correctly: Whisper `.bin` and Whisper GGUF go to the CPU; Parakeet is allowed on the GPU.
+- **GPU program cache** (`voiceinput-shared/src/main/cpp/tests`), run on PoCL (a desktop OpenCL implementation):
+  - The first build compiles and saves; the second loads from cache and computes correctly.
+  - Different build options get their own entry, and a corrupted file is detected and replaced.
 
 **Native tests against the real typing model (`native/jni/tests_host`)**
 - **Sentence scoring:** correct, deterministic, and suggestions are identical before and after grammar checks.
@@ -165,6 +176,8 @@ The keyboard works straight away with its built-in models: FUTO's tiny English W
 - Download: https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v2-gguf/resolve/main/parakeet-tdt-0.6b-v2-Q5_K_M.gguf
 - SHA-256: `dfa904520b95451599683613fea47766c378c5fdf5d8cddf48151226b6eaec85`
 - **About 12× faster than Whisper large-v3-turbo** in my test (2.2 s vs 26.9 s for 11 s of audio), and it got the punctuation exactly right.
+- On your phone it waits only ~0.2–0.7 s after you stop talking.
+- It's the model that runs on the GPU, using about half the energy of the CPU.
 - Two limitations:
   - It ignores the personal-dictionary glossary.
   - It ignores the "text already typed" context; that only helps Whisper models.
@@ -173,7 +186,9 @@ The keyboard works straight away with its built-in models: FUTO's tiny English W
 - File: `whisper-large-v3-turbo-Q5_K_M.gguf` (620 MB, MIT licence).
 - Download: https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf/resolve/main/whisper-large-v3-turbo-Q5_K_M.gguf
 - SHA-256: `06fc9923c09fb3ae878ea12c34d1be3ed18fad039ab14b4b045c7b6c40af56b2`
-- Uses your glossary and the "text already typed" context, but it's **slow on a CPU**. Expect several seconds after you stop talking.
+- Uses your glossary and the "text already typed" context, but it's **slow**: it always processes a full 30-second window, even for a short clip.
+  - About 29 s for a 3-second clip on this machine; several seconds on your phone.
+  - It never runs on the GPU.
 - One side effect of the context: words already in the text box can be left out if you say them again. In my test, "My fellow Americans" was given as context and dropped from the transcript. Normally you dictate new text, so this doesn't matter.
 
 ### How to import into the keyboard (either model)
@@ -200,7 +215,9 @@ The keyboard works straight away with its built-in models: FUTO's tiny English W
   - **Personalisation (what it learned)**: learning is on by default. Strength 75%, threads 2.
 - **Voice Input**
   - **Use the text you've already typed**: on.
-  - **Use the GPU**: off by default. Experimental, so try turning it on.
+  - **Use the GPU for voice input**: off by default. **Turn it on if you use Parakeet**; it uses about half the energy. Whisper models ignore it and use the CPU.
+  - **Last voice input run** (box under the settings): model, GPU/CPU, timings, any GPU problem. **Copy details** copies it.
+  - **Measure voice power use (CPU vs GPU)**: the battery test (see §8).
 
 ---
 
@@ -216,6 +233,15 @@ All pushed to `claude/keyboard-voice-suggestions-d59gth`. No pull requests were 
 - `2a904fd` Host test with the real Whisper large-v3-turbo GGUF
 - `7629ea9` Tune training size; save history in background; Parakeet test
 - `7c5d812` Keep TrainingWorker through R8; add this report
+- `ddb937f` … `425025f` Voice speed and GPU work after your first tests (see §8):
+  - `e236314` keep the voice model loaded, GPU→CPU fallback, diagnostics
+  - `6088a56` engine log in diagnostics
+  - `ddb937f`, `cc83624` Vulkan GPU (later removed)
+  - `48b66fe` switch to OpenCL
+  - `1402eae` crash-safe GPU log
+  - `d08c3e3` turn off the Qualcomm-tuned programs (compiler crash)
+  - `4578ec4` GPU program cache and the power test
+  - `425025f` Parakeet-only GPU rule; power test uses your model
 
 **voice-input**
 - `b8037a7` Add 'custom' build flavor that installs alongside the official app
@@ -236,3 +262,38 @@ cmake -S native/jni/tests_host -B /tmp/xlm-host -DCMAKE_C_COMPILER=clang -DCMAKE
 # voice input app (NDK 30)
 VERSION_CODE=... VERSION_NAME=... ./gradlew assembleCustomRelease
 ```
+
+---
+
+## 8. After the first install: voice speed and the GPU
+
+What we found and changed together while you tested on the phone.
+
+**Why voice input felt slow at first**
+- **Whisper large-v3-turbo is inherently slow for short clips.** It always processes a 30-second window, so you get several seconds of waiting. Parakeet fixed that: a 0.2–0.7 s wait on your phone.
+- **The keyboard threw the voice model away on almost every mic press.** It unloaded the model whenever Android sent a routine "free some memory" signal, for example when the keyboard was simply hidden. It now only unloads under real memory pressure.
+
+**Getting the GPU to work**
+
+| Attempt | Result on the S25 Ultra | What the diagnostics showed |
+|---|---|---|
+| Vulkan | Empty text, slow (1.75–20 s) | `decoder: … 0 tokens`; still broken with fp16 turned off |
+| OpenCL with Qualcomm-tuned programs | Keyboard crashed | 139 of 141 programs compiled, then the compiler crashed on `gemv_noshuffle_q5_k_f32` |
+| **OpenCL with general programs** | **Works** | Correct text; ~5 s to compile on first use, now cached |
+| OpenCL with a Whisper model | Wrong text ("!....London, oh") | Fixed by allowing only Parakeet-type models on the GPU |
+
+**Battery measurements**
+- **How the test works:** *Measure voice power use* transcribes the same 11 s recording repeatedly, alternating idle, CPU and GPU periods in two rounds. It reads the phone's battery current and voltage 10× a second and subtracts idle power.
+- **Comparing runs:** compare CPU and GPU within one run, not across runs. Conditions such as brightness or temperature change the absolute numbers.
+
+| Run (Parakeet) | CPU per transcription | GPU per transcription | GPU saving |
+|---|---|---|---|
+| With music playing in the background | 9.5 J, 1.33 s | 4.7 J, 1.07 s | ~50% |
+| Without music | 10.6 J, 1.30 s | 4.4 J, 1.09 s | ~58% |
+
+- Every round agreed: the CPU used 9.4–10.6 J, the GPU 4.2–4.8 J. The transcripts were identical.
+- **In everyday terms:** your battery holds ~70,000 J. Half an hour of actual dictation costs ~2% of the battery on the CPU and ~1% on the GPU.
+- **For comparison, FUTO's built-in tiny Whisper model** (measured by mistake on the first two runs) was cheaper still on the CPU, ~1 J per transcription. On the GPU it used ~3× more and produced garbage, which is why Whisper is now CPU-only.
+
+**Recommendation:** use **Parakeet with the GPU on**.
+
