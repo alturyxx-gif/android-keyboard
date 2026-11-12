@@ -1,5 +1,6 @@
 #include <string>
 #include <cstring>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cmath>
@@ -72,6 +73,11 @@ struct WhisperModelState {
     // models (e.g. Whisper large-v3-turbo) must use the full 30 s window or quality drops.
     bool shorten_audio_ctx = false;
     bool using_gpu = false;
+
+    // For falling back from GPU to CPU in the middle of a request
+    std::string model_path;
+    int n_threads = 4;
+    std::string last_error;
 };
 
 void log_callback(transcribe_log_level level, const char *msg, void *userdata) {
@@ -161,6 +167,8 @@ static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboo
         fclose(f);
     }
     state->shorten_audio_ctx = !is_gguf || model_dir_str.find("acft") != std::string::npos;
+    state->model_path = model_dir_str;
+    state->n_threads = (int)num_procs;
 
     transcribe_set_abort_callback(state->session, abort_callback, (void*)state);
     return reinterpret_cast<jlong>(state);
@@ -286,6 +294,35 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
     }
 
     auto result = transcribe_run(state->session, samples, num_samples, &params);
+
+    // GPU safety net: if the GPU run failed, or produced no text for over a second of audio,
+    // re-open the model on the CPU and run again, so the user still gets their text.
+    if(state->using_gpu && result != TRANSCRIBE_ERR_ABORTED && result != TRANSCRIBE_ERR_LANG_BAILED) {
+        bool empty = true;
+        if(result == TRANSCRIBE_OK) {
+            const char *t = transcribe_full_text(state->session);
+            if(t) for(const char *c = t; *c; c++) if(!isspace((unsigned char)*c)) { empty = false; break; }
+        }
+        if(result != TRANSCRIBE_OK || (empty && num_samples > 16000)) {
+            state->last_error = result != TRANSCRIBE_OK
+                    ? std::string("GPU run failed (") + transcribe_status_string(result) + "), used CPU instead"
+                    : std::string("GPU returned no text, used CPU instead");
+            AKLOGE("[voice] %s", state->last_error.c_str());
+
+            transcribe_session_free(state->session);
+            state->session = nullptr;
+            state->using_gpu = false;
+            auto r2 = open_session(state->model_path, TRANSCRIBE_BACKEND_CPU, state->n_threads, &state->session);
+            if(r2 == TRANSCRIBE_OK && state->session) {
+                transcribe_set_abort_callback(state->session, abort_callback, (void*)state);
+                result = transcribe_run(state->session, samples, num_samples, &params);
+            } else {
+                state->last_error += std::string("; CPU re-open failed: ") + transcribe_status_string(r2);
+                env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
+                return 0;
+            }
+        }
+    }
     env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
 
     std::string output;
@@ -312,11 +349,17 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
 
     if(result != TRANSCRIBE_OK) {
         AKLOGE("Failed to run! Status: %s", transcribe_status_string(result));
+        state->last_error = std::string("Run failed: ") + transcribe_status_string(result);
         return 0;
     }
 
     auto txt = transcribe_full_text(state->session);
     return string2jstring(env, txt);
+}
+
+static jstring WhisperGGML_lastError(JNIEnv *env, jclass clazz, jlong handle) {
+    auto *state = reinterpret_cast<WhisperModelState *>(handle);
+    return env->NewStringUTF(state ? state->last_error.c_str() : "");
 }
 
 static jboolean WhisperGGML_startStream(JNIEnv *env, jobject instance, jlong handle, jstring prompt, jobjectArray languages, jobjectArray bail_languages, jint tier) {
@@ -576,6 +619,11 @@ static const JNINativeMethod sMethods[] = {
                 const_cast<char *>("isUsingGpuNative"),
                 const_cast<char *>("(J)Z"),
                 reinterpret_cast<void *>(WhisperGGML_isUsingGpu)
+        },
+        {
+                const_cast<char *>("lastErrorNative"),
+                const_cast<char *>("(J)Ljava/lang/String;"),
+                reinterpret_cast<void *>(WhisperGGML_lastError)
         },
         {
                 const_cast<char *>("cancelNative"),

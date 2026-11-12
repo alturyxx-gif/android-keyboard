@@ -153,6 +153,8 @@ private class VoiceInputActionWindow(
     private fun loadSettings(): RecognizerViewSettings {
         VoiceEngineSettings.useGpu = context.getSetting(VOICE_USE_GPU)
         VoiceEngineSettings.gpuCrashMarker = java.io.File(context.noBackupFilesDir, "voice_gpu_attempt")
+        VoiceEngineSettings.gpuFailedMarker = java.io.File(context.noBackupFilesDir, "voice_gpu_failed")
+        VoiceEngineSettings.diagnosticsFile = java.io.File(context.noBackupFilesDir, "voice_last_run.txt")
 
         val enableSound = context.getSetting(ENABLE_SOUND)
         val verboseFeedback = false//context.getSetting(VERBOSE_PROGRESS)

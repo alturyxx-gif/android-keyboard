@@ -541,10 +541,13 @@ class AudioRecognizer(
     }
 
     private suspend fun runModel() {
+        val stoppedAt = System.nanoTime()
+        var waitedForLoad = 0L
         loadModelJob?.let {
             if (it.isActive) {
                 println("Model was not finished loading...")
                 it.join()
+                waitedForLoad = (System.nanoTime() - stoppedAt) / 1_000_000
             }
         }
 
@@ -567,6 +570,12 @@ class AudioRecognizer(
             isBlankResult(outputText) -> ""
             else -> outputText
         }
+
+        // Custom build: record how long you actually waited after you stopped talking
+        val totalWait = (System.nanoTime() - stoppedAt) / 1_000_000
+        val ggml = org.futo.voiceinput.shared.ggml.VoiceEngineSettings
+        ggml.writeDiagnostics(ggml.readDiagnostics() + "\nWait after you stopped: %.1f s".format(totalWait / 1000.0) +
+                if (waitedForLoad > 0) " (of which %.1f s waiting for the model to load)".format(waitedForLoad / 1000.0) else "")
 
         yield()
         lifecycleScope.launch {

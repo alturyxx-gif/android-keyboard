@@ -139,6 +139,28 @@ class WhisperGGMLHostTest {
         runBlocking { w.close() }
     }
 
+    /** Timing breakdown for a short (3 s) clip: model load vs. transcription. */
+    @Test
+    fun timingLoadVersusTranscribeShortClip() {
+        val paths = listOfNotNull(System.getenv("VOICE_PARAKEET_MODEL"), System.getenv("VOICE_TURBO_MODEL"), model.path)
+        assumeTrue(available())
+        VoiceEngineSettings.useGpu = false
+        val clip = readWav(audio).copyOfRange(0, 16000 * 3)
+        for (p in paths) {
+            if (!File(p).exists()) continue
+            val t0 = System.nanoTime()
+            val w = WhisperGGML(File(p))
+            val t1 = System.nanoTime()
+            val text = runBlocking { w.infer(clip, "", arrayOf("en"), arrayOf(), DecodingMode.BeamSearch5, false, {}) }
+            val t2 = System.nanoTime()
+            val text2 = runBlocking { w.infer(clip, "", arrayOf("en"), arrayOf(), DecodingMode.BeamSearch5, false, {}) }
+            val t3 = System.nanoTime()
+            println("TIMING %s: load %.2f s, first run %.2f s, second run %.2f s -> %s".format(
+                File(p).name, (t1 - t0) / 1e9, (t2 - t1) / 1e9, (t3 - t2) / 1e9, text2))
+            runBlocking { w.close() }
+        }
+    }
+
     @Test
     fun invalidModelThrows() {
         assumeTrue("host voice library not built", available())

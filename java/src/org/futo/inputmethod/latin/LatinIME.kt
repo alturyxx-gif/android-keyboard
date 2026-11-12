@@ -820,7 +820,14 @@ class LatinIME : InputMethodServiceCompose(), LatinIMELegacy.SuggestionStripCont
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        uixManager.cleanUpPersistentStates()
+        // Custom build: only free cached state (incl. the ~500 MB voice model) when memory is
+        // actually tight. Android also sends trim signals simply because the keyboard was
+        // hidden, which used to force a full voice model reload on nearly every mic press.
+        @Suppress("DEPRECATION")
+        if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
+            uixManager.cleanUpPersistentStates()
+        }
     }
 
     @RequiresApi(Build.VERSION_CODES.R)

@@ -25,6 +25,7 @@ import org.futo.inputmethod.latin.uix.settings.UserSetting
 import org.futo.inputmethod.latin.uix.settings.UserSettingsMenu
 import org.futo.inputmethod.latin.uix.settings.useDataStore
 import org.futo.inputmethod.latin.uix.settings.useDataStoreValue
+import org.futo.inputmethod.latin.uix.settings.userSettingDecorationOnly
 import org.futo.inputmethod.latin.uix.settings.userSettingNavigationItem
 import org.futo.inputmethod.latin.uix.settings.userSettingToggleDataStore
 
@@ -178,6 +179,27 @@ val VoiceInputMenu = UserSettingsMenu(
             subtitle = R.string.voice_use_gpu_subtitle,
             setting = org.futo.inputmethod.latin.uix.VOICE_USE_GPU
         ).copy(visibilityCheck = visibilityCheckNotSystemVoiceInput),
+
+        // Custom build: details of the last voice run (model, GPU/CPU, timings, errors)
+        userSettingDecorationOnly {
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val gpuOn = useDataStoreValue(org.futo.inputmethod.latin.uix.VOICE_USE_GPU)
+            // Changing the GPU setting gives the GPU a fresh chance
+            val previous = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<Boolean?>(null) }
+            androidx.compose.runtime.LaunchedEffect(gpuOn) {
+                if (previous.value != null && previous.value != gpuOn) {
+                    java.io.File(context.noBackupFilesDir, "voice_gpu_failed").delete()
+                    java.io.File(context.noBackupFilesDir, "voice_gpu_attempt").delete()
+                }
+                previous.value = gpuOn
+            }
+            val text = androidx.compose.runtime.remember {
+                try {
+                    java.io.File(context.noBackupFilesDir, "voice_last_run.txt").takeIf { it.exists() }?.readText()
+                } catch (e: Exception) { null }
+            }
+            if (!text.isNullOrBlank()) Tip("Last voice input run:\n$text")
+        }.copy(visibilityCheck = visibilityCheckNotSystemVoiceInput),
 
         userSettingToggleDataStore(
             title = R.string.voice_input_settings_animate_bubble,
