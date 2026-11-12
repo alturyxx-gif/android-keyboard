@@ -106,6 +106,7 @@ val VoiceInputMenu = UserSettingsMenu(
                 val privacyWhitelist = listOf(
                     "org.futo.voiceinput",
                     "org.futo.voiceinput.dev",
+                    "org.futo.voiceinput.custom",
                     "dev.notune.transcribe",
                     "dev.soupslurpr.transcribro"
                 )

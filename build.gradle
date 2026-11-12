@@ -306,6 +306,21 @@ android {
             buildConfigField "String", "PAYMENT_PRICE", "FUTOPAY_PRICE"
         }
 
+        // Side-by-side build: installs next to the official FUTO Keyboard,
+        // shows as "FUTO Keyboard Custom", never checks for official updates.
+        custom {
+            dimension "buildType"
+            applicationIdSuffix ".custom"
+            versionNameSuffix "-custom"
+
+            buildConfigField "boolean", "IS_PLAYSTORE_BUILD", "false"
+            buildConfigField "boolean", "UPDATE_CHECKING", "false"
+            buildConfigField "boolean", "UPDATE_CHECKING_NETWORK", "false"
+            buildConfigField "String", "BRANCH", "\"${getBranch()}\""
+
+            buildConfigField "String", "PAYMENT_PRICE", "FUTOPAY_PRICE"
+        }
+
         playstore {
             dimension "buildType"
             applicationIdSuffix ".playstore"
@@ -348,6 +363,12 @@ android {
         stable {
             java.srcDirs = ['common/src', 'java/src', 'java/stable/java']
             manifest.srcFile 'java/stable/AndroidManifest.xml'
+        }
+
+        custom {
+            java.srcDirs = ['common/src', 'java/src', 'java/stable/java']
+            manifest.srcFile 'java/stable/AndroidManifest.xml'
+            res.srcDirs = ['java/custom/res']
         }
 
         unstable {

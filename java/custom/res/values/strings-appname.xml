@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Application name for the custom (side-by-side) build of the keyboard. -->
+    <string name="english_ime_name">FUTO Keyboard Custom</string>
+
+    <!-- Name of Android spell checker service. -->
+    <string name="spell_checker_service_name">FUTO Spell Checker Custom</string>
+
+    <!-- Title for Android Keyboard settings screen. -->
+    <string name="english_ime_settings">FUTO Keyboard Settings Custom</string>
+
+    <!-- Title for the spell checking service settings screen. -->
+    <string name="android_spell_checker_settings">FUTO Spell Checker Settings Custom</string>
+</resources>
