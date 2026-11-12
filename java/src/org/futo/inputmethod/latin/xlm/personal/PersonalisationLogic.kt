@@ -48,15 +48,24 @@ object HistoryRetention {
  * Changes vs. the original FUTO logic:
  *  - Uses the longer `priorContext` (up to [MAX_CONTEXT_CHARS]) instead of just the last few
  *    words, so the model learns phrasing (Stage 2.5).
- *  - Weights examples by how the word was chosen (Stage 2.6): words the user picked or typed
- *    deliberately count more than words autocorrect inserted, and undone autocorrections teach
- *    the model that the typed word was right.
+ *  - Each message is trained ONCE. Every word is logged with the whole text before it, so a
+ *    10-word message produced 10 overlapping lines; together with several typo copies per word
+ *    the model saw each message dozens of times and memorised it (first phone run: everyday
+ *    English 80% worse). Lines already contained in a longer line are now dropped.
+ *  - Typo-correction examples use a short context and are sampled, weighted by how the word
+ *    was chosen (Stage 2.6): undone autocorrections always teach that the typed word was right.
+ *  - Everyday English "replay" text is mixed in so the model doesn't drift away from normal text.
  *  - Roman Urdu sentences are excluded from English training (Stage 2.3).
- *  - Splits off a held-out set so each training run can be checked for quality (Stage 2.1).
+ *  - Splits off held-out messages (not overlapping training text) for the quality check (2.1).
  */
 object TrainingDataBuilder {
     const val MAX_CONTEXT_CHARS = 160
     const val MIN_ENTRIES = 50
+    /** Words of context kept in typo-correction examples */
+    const val TYPO_CONTEXT_WORDS = 4
+    /** Everyday-English replay lines per personal line */
+    const val REPLAY_RATIO = 1.0f
+    private const val SHINGLE = 4
 
     data class Result(val train: List<String>, val heldOut: List<String>, val usedEntries: Int)
 
@@ -70,13 +79,23 @@ object TrainingDataBuilder {
         return if (space in 0 until cut.length - 1) cut.substring(space + 1) else cut
     }
 
-    /** Number of training copies for an entry, by how the word was chosen. */
+    fun plainLine(entry: HistoryLogForTraining): String =
+        "${contextFor(entry)} ${entry.committedWord.trim()}".trim()
+
+    /** Relative importance of an entry, by how the word was chosen. */
     fun weight(entry: HistoryLogForTraining): Int = when (entry.importance) {
         Importance.REVERTED_AUTOCORRECT -> 6
         Importance.KEPT_TYPED -> 5
         Importance.PICKED -> 3
         Importance.TYPED -> 2
         else -> 1 // DECIDED (autocorrect) counts least
+    }
+
+    /** Chance of adding a synthetic-typo example for an entry. */
+    private fun syntheticTypoChance(entry: HistoryLogForTraining): Float = when (entry.importance) {
+        Importance.PICKED -> 0.4f
+        Importance.TYPED -> 0.25f
+        else -> 0.15f
     }
 
     fun isUsable(entry: HistoryLogForTraining): Boolean {
@@ -86,29 +105,27 @@ object TrainingDataBuilder {
         return true
     }
 
-    fun examplesFor(entry: HistoryLogForTraining, random: Random): List<String> {
-        val ctx = contextFor(entry)
+    private fun shortContext(entry: HistoryLogForTraining): String =
+        contextFor(entry).split(' ').filter { it.isNotBlank() }.takeLast(TYPO_CONTEXT_WORDS).joinToString(" ")
+
+    /** Typo-correction examples for one entry (the plain text is handled per message). */
+    fun typoExamplesFor(entry: HistoryLogForTraining, random: Random): List<String> {
+        val ctx = shortContext(entry)
         val word = entry.committedWord.trim()
         val misspelled = entry.misspelledWord?.trim()
-        val n = weight(entry)
         val out = ArrayList<String>()
-
         when (entry.importance) {
             Importance.REVERTED_AUTOCORRECT, Importance.KEPT_TYPED -> {
                 // The user insisted on what they typed: teach "typed -> typed"
                 val typed = misspelled ?: word
-                repeat(n) { out.add(TrainingDataGenerator.concatFormatWordMisspelling(ctx, typed, word)) }
-                out.add("$ctx $word")
+                repeat(2) { out.add(TrainingDataGenerator.concatFormatWordMisspelling(ctx, typed, word)) }
             }
             else -> {
-                // Plain next-word example (prediction)
-                repeat(max(1, n / 2)) { out.add("$ctx $word") }
                 if (misspelled != null && misspelled != word) {
                     // A real typo -> correction pair from the user's own typing
-                    repeat(n) { out.add(TrainingDataGenerator.concatFormatWordMisspelling(ctx, misspelled, word)) }
+                    out.add(TrainingDataGenerator.concatFormatWordMisspelling(ctx, misspelled, word))
                 }
-                // Synthetic typos so the model learns to correct towards this word
-                repeat(n) {
+                if (random.nextFloat() < syntheticTypoChance(entry)) {
                     val correctness = listOf(4.0f, 1.0f, 0.8f, 0.6f)[random.nextInt(4)]
                     out.add(TrainingDataGenerator.concatWordMisspelling(ctx, word, correctness))
                 }
@@ -117,48 +134,84 @@ object TrainingDataBuilder {
         return out.map { it.trim() }.filter { it.isNotBlank() }
     }
 
+    private fun words(line: String) = line.split(' ').filter { it.isNotEmpty() }
+
+    /** Word n-grams (n = 1..[SHINGLE]) of [line], used to detect text contained in other text. */
+    private fun addShingles(line: String, into: MutableSet<String>) {
+        val w = words(line)
+        for (n in 1..SHINGLE) for (i in 0..w.size - n) into.add(w.subList(i, i + n).joinToString(" "))
+    }
+
+    private fun isCovered(line: String, shingles: Set<String>): Boolean {
+        val w = words(line)
+        if (w.isEmpty()) return true
+        if (w.size <= SHINGLE) return shingles.contains(w.joinToString(" "))
+        for (i in 0..w.size - SHINGLE) if (!shingles.contains(w.subList(i, i + SHINGLE).joinToString(" "))) return false
+        return true
+    }
+
     /**
-     * @param heldOutFraction fraction of entries reserved for the before/after quality check
+     * Drops lines whose text is already contained in a longer line (the per-word prefixes of
+     * one message), keeping one line per message.
+     */
+    fun distinctMessages(lines: List<String>): List<String> {
+        val shingles = HashSet<String>()
+        val kept = ArrayList<String>()
+        for (line in lines.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sortedByDescending { it.length }) {
+            if (isCovered(line, shingles)) continue
+            kept.add(line)
+            addShingles(line, shingles)
+        }
+        return kept
+    }
+
+    /**
+     * @param heldOutFraction fraction of messages reserved for the before/after quality check
+     * @param replay everyday-English sentences mixed into training ([REPLAY_RATIO] per message)
      */
     fun build(
         entries: List<HistoryLogForTraining>,
         random: Random = Random(1234),
         heldOutFraction: Float = 0.1f,
+        replay: List<String> = emptyList(),
+        replayRatio: Float = REPLAY_RATIO,
     ): Result {
         val usable = entries.filter { isUsable(it) }
         if (usable.size < MIN_ENTRIES) return Result(emptyList(), emptyList(), usable.size)
 
-        val shuffled = usable.shuffled(random)
-        val nHeld = min(500, max(10, (shuffled.size * heldOutFraction).toInt()))
-        val held = shuffled.take(nHeld)
-        val train = shuffled.drop(nHeld)
+        val messages = distinctMessages(usable.map { plainLine(it) }).shuffled(random)
+        val nHeld = min(100, max(3, (messages.size * heldOutFraction).toInt()))
+            .coerceAtMost(messages.size / 2)
+        val held = messages.take(nHeld)
+        val trainMessages = messages.drop(nHeld)
 
-        val trainLines = train.flatMap { examplesFor(it, random) }.shuffled(random)
-        // Held-out: plain "context word" lines, scored by the model before/after training
-        val heldLines = held.map { "${contextFor(it)} ${it.committedWord.trim()}".trim() }
+        // Held-out: the last few words of each held message, each scored given the text before it
+        val heldLines = held.flatMap { m ->
+            val w = words(m)
+            (max(1, w.size - 3) until w.size).map { i -> w.subList(0, i + 1).joinToString(" ") }
+        }
+
+        // Typo examples only from entries whose text isn't part of a held-out message
+        val heldShingles = HashSet<String>().also { s -> held.forEach { addShingles(it, s) } }
+        val typoLines = usable.filter { !isCovered(plainLine(it), heldShingles) }
+            .flatMap { typoExamplesFor(it, random) }
+
+        val replayLines = if (replay.isEmpty()) emptyList() else {
+            val n = (trainMessages.size * replayRatio).toInt()
+            List(n) { replay[random.nextInt(replay.size)] }
+        }
+
+        val trainLines = (trainMessages + typoLines + replayLines).shuffled(random)
         return Result(trainLines, heldLines, usable.size)
     }
 }
 
-/**
- * How big each training run should be (Stage 2.5). The original code always ran 128 steps
- * regardless of data size; this scales with the amount of data so more history is actually used.
- */
+/** Training run limits (Stage 2.5). The step count itself is worked out natively from the
+ *  number of tokens (about two passes over the data), see AdapterTrainer.cpp. */
 object TrainingPlan {
-    const val MIN_STEPS = 32
-    const val MAX_STEPS = 300 // keeps the biggest run to roughly an hour on the phone (host test: ~6-11 s/step)
+    const val MAX_STEPS = 300 // upper limit, roughly half an hour on the phone
     const val BATCH = 4
     const val CONTEXT_TOKENS = 96
-
-    /**
-     * About one pass over the training lines. Host tests on the real model showed that many
-     * passes over a small history makes the model memorise it and get worse at general English,
-     * so this deliberately stays close to a single pass.
-     */
-    fun steps(numTrainingLines: Int): Int {
-        val wanted = numTrainingLines / BATCH
-        return wanted.coerceIn(MIN_STEPS, MAX_STEPS)
-    }
 }
 
 /**

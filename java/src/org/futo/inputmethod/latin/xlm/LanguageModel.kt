@@ -41,6 +41,8 @@ class LanguageModel(
     val adapterOverride: java.io.File? = null,
     /** Used by the training worker: true forces no adapter at all. */
     val forceNoAdapter: Boolean = false,
+    /** Used by the training worker: evaluate the adapter at this strength multiplier. */
+    val adapterScaleMultiplier: Float? = null,
 ) {
     private suspend fun loadModel() = withContext(LanguageModelScope) {
         withContext(Dispatchers.Main) { JniUtils.loadNativeLibrary() }
@@ -50,7 +52,9 @@ class LanguageModel(
         // Personalisation adapter (Stage 2.2): kept as a separate file and applied on load,
         // so it can be reset, rolled back or weakened without touching the base model.
         val adapter = adapterOverride ?: PersonalAdapterFiles.activeAdapter(modelInfoLoader.path)
-        val strength = applicationContext.getSetting(PersonalisationStrength)
+        // The slider's strength, times the multiplier the quality check settled on for this adapter
+        val strength = applicationContext.getSetting(PersonalisationStrength) *
+                (adapterScaleMultiplier ?: adapter?.let { PersonalAdapterFiles.scaleMultiplier(it) } ?: 1f)
         val useAdapter = !forceNoAdapter && adapter != null && adapter.isFile && strength > 0.0f
                 && (adapterOverride != null || applicationContext.getSetting(org.futo.inputmethod.latin.uix.USE_TRANSFORMER_FINETUNING))
         val threads = applicationContext.getSetting(TypingModelThreads)

@@ -62,8 +62,7 @@ class TrainingDataBuilderTest {
         val prior = "Yesterday after work I told my brother that we should probably go to the"
         val e = entry("park", prior = prior)
         assertEquals(prior, TrainingDataBuilder.contextFor(e))
-        val lines = TrainingDataBuilder.examplesFor(e, Random(1))
-        assertTrue(lines.any { it == "$prior park" })
+        assertEquals("$prior park", TrainingDataBuilder.plainLine(e))
     }
 
     @Test
@@ -78,7 +77,7 @@ class TrainingDataBuilderTest {
     @Test
     fun revertedAutocorrectTeachesTypedWord() {
         val e = entry("Zainab", importance = Importance.REVERTED_AUTOCORRECT, misspelled = "Zainab")
-        val lines = TrainingDataBuilder.examplesFor(e, Random(1))
+        val lines = TrainingDataBuilder.typoExamplesFor(e, Random(1))
         // Every correction example must map the typed word to itself, never to something else
         assertTrue(lines.isNotEmpty())
         assertTrue(lines.all { it.contains("Zainab") })
@@ -87,8 +86,51 @@ class TrainingDataBuilderTest {
     @Test
     fun realTypoBecomesCorrectionPair() {
         val e = entry("because", importance = Importance.DECIDED, misspelled = "becuase")
-        val lines = TrainingDataBuilder.examplesFor(e, Random(1))
-        assertTrue(lines.any { it.contains("because") })
+        val lines = TrainingDataBuilder.typoExamplesFor(e, Random(1))
+        assertTrue(lines.any { it.contains("because") && it.contains("<XBU>") })
+    }
+
+    @Test
+    fun typoExamplesUseShortContext() {
+        val e = entry("because", prior = "one two three four five six seven", misspelled = "becuase")
+        val line = TrainingDataBuilder.typoExamplesFor(e, Random(1)).first()
+        assertTrue(line, line.startsWith("four five six seven <XBU>"))
+    }
+
+    @Test
+    fun eachMessageIsTrainedOnce() {
+        // Every word of one message is logged with the text before it: one line must remain
+        val message = "Hey are you coming to the cafe later today"
+        val w = message.split(' ')
+        val lines = (1 until w.size).map { w.subList(0, it + 1).joinToString(" ") }
+        assertEquals(listOf(message), TrainingDataBuilder.distinctMessages(lines))
+        // Different messages are all kept
+        val other = listOf("I left my keys at the office", "See you at the gym at seven")
+        assertEquals(other.toSet(), TrainingDataBuilder.distinctMessages(other).toSet())
+    }
+
+    @Test
+    fun prefixChainsDoNotMultiplyTrainingText() {
+        // 20 messages x 10 words, logged word by word like the keyboard does
+        val entries = (0 until 20).flatMap { m ->
+            val w = (0 until 10).map { "m${m}w$it" }
+            (1 until w.size).map { i -> entry(w[i], prior = w.subList(0, i).joinToString(" "), importance = Importance.TYPED) }
+        }
+        val r = TrainingDataBuilder.build(entries, Random(5))
+        val plain = r.train.filter { !it.contains("<XBU>") }
+        // One plain line per training message, not one per word
+        assertTrue("plain lines: ${plain.size}", plain.size <= 20)
+        // Typo examples are sampled, so far fewer than one per word
+        val typos = r.train.count { it.contains("<XBU>") }
+        assertTrue("typo lines: $typos", typos < entries.size / 2)
+    }
+
+    @Test
+    fun replayIsMixedIn() {
+        val entries = (0 until 100).map { entry("word$it", prior = "context number $it is") }
+        val replay = listOf("Everyday sentence one.", "Everyday sentence two.")
+        val r = TrainingDataBuilder.build(entries, Random(3), replay = replay, replayRatio = 1.0f)
+        assertEquals(90, r.train.count { it in replay }) // one replay line per training message
     }
 
     @Test
@@ -109,23 +151,10 @@ class TrainingDataBuilderTest {
         val many = (0 until 200).map { entry("word$it", prior = "context number $it is") }
         val r = TrainingDataBuilder.build(many, Random(3))
         assertEquals(200, r.usedEntries)
-        assertEquals(20, r.heldOut.size)
-        assertTrue(r.train.size > 180)
-        // Held-out words must not appear as plain training lines
-        val heldWords = r.heldOut.map { it.substringAfterLast(' ') }.toSet()
-        val plainTrain = r.train.filter { !it.contains("<") }.map { it.substringAfterLast(' ') }.toSet()
-        assertTrue(heldWords.intersect(plainTrain).isEmpty())
-    }
-}
-
-class TrainingPlanTest {
-    @Test
-    fun stepsScaleWithDataAndAreBounded() {
-        assertEquals(TrainingPlan.MIN_STEPS, TrainingPlan.steps(10))
-        assertEquals(TrainingPlan.MAX_STEPS, TrainingPlan.steps(1_000_000))
-        assertTrue(TrainingPlan.steps(2000) > TrainingPlan.steps(500))
-        // About one pass over the data
-        assertEquals(250, TrainingPlan.steps(1000))
+        // Held-out words must not appear in any training line
+        val heldWords = r.heldOut.map { it.substringAfterLast(' ') }.filter { it.startsWith("word") }.toSet()
+        assertTrue(heldWords.isNotEmpty())
+        assertTrue(r.train.none { line -> heldWords.any { line.endsWith(" $it") || line.contains(" $it ") } })
     }
 }
 

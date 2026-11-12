@@ -24,10 +24,11 @@ class AdapterTrainer(
     private external fun closeNative(handle: Long)
     private external fun addExample(handle: Long, example: String)
     private external fun train(handle: Long): Boolean // Long-running function
-    private external fun setPlan(handle: Long, steps: Int, ctx: Int, batch: Int, threads: Int)
+    private external fun setPlan(handle: Long, maxSteps: Int, ctx: Int, batch: Int, threads: Int): Int
 
-    fun setPlan(steps: Int, ctx: Int, batch: Int, threads: Int) {
-        if(isHandleValid()) setPlan(handle, steps, ctx, batch, threads)
+    /** Returns the number of training steps that will run; [maxSteps] is only an upper limit. */
+    fun setPlan(maxSteps: Int, ctx: Int, batch: Int, threads: Int): Int {
+        return if(isHandleValid()) setPlan(handle, maxSteps, ctx, batch, threads) else 0
     }
 
     private var handle: Long = 0L

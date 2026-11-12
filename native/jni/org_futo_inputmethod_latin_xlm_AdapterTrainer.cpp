@@ -1,3 +1,4 @@
+#include <cmath>
 //
 // Created by alex on 11/7/23.
 //
@@ -17,7 +18,12 @@
 #include "ggml/ModelMeta.h"
 
 namespace latinime {
-    struct AdapterTrainerState {
+    // Personalisation training settings (tuned on the host with exp_train, see tests_host)
+static constexpr float kTrainingEpochs = 2.0f;
+static constexpr int kMinTrainingSteps = 4;
+static constexpr float kTrainingLearningRate = 1e-3f;
+
+struct AdapterTrainerState {
         std::string baseModelPath;
         std::string loraCachePath;
         std::string outputModelPath;
@@ -103,15 +109,31 @@ namespace latinime {
             return finetune_train(params);
         }
 
-        // Stage 2.5: training size scales with how much history there is
-        void SetPlan(int steps, int ctx, int batch, int threads) {
-            if(steps > 0) params.common.adam_n_iter = steps;
+        // Stage 2.5: training size scales with how much history there is.
+        // Each optimiser step consumes n_batch * n_gradient_accumulation windows of n_ctx tokens,
+        // and short lines are packed together to fill each window. So one pass over the data is
+        // (total tokens) / (n_ctx * n_batch * accumulation) steps - NOT lines / batch. Counting
+        // lines made the first phone run do ~12 passes, memorising the history and hurting
+        // general English by 80%. [maxSteps] is now only an upper limit.
+        int EpochSteps() const {
+            long tokens = 0;
+            for(const auto &ex : params.training_data) tokens += (long)ex.size() + 1;
+            long perStep = (long)params.common.n_ctx * params.common.n_batch * params.common.n_gradient_accumulation;
+            if(perStep <= 0) return 1;
+            return (int)std::max(1L, (tokens + perStep - 1) / perStep);
+        }
+
+        void SetPlan(int maxSteps, int ctx, int batch, int threads, float epochs = kTrainingEpochs) {
             if(ctx > 0) params.common.n_ctx = ctx;
             if(batch > 0) params.common.n_batch = batch;
             if(threads > 0) params.common.n_threads = threads;
-            params.common.warmup = std::max(10, params.common.adam_n_iter / 20);
-            // The original code stopped after 1 epoch, which with a few hundred examples is only
-            // ~15 optimiser steps - far too few to learn anything. Let the step count decide.
+            int steps = (int)std::ceil(EpochSteps() * epochs);
+            steps = std::max(kMinTrainingSteps, steps);
+            if(maxSteps > 0) steps = std::min(steps, maxSteps);
+            params.common.adam_n_iter = steps;
+            params.common.warmup = std::max(1, steps / 10);
+            params.common.adam_alpha = kTrainingLearningRate;
+            // The step count decides when to stop, not the epoch counter
             params.common.n_epochs = -1;
         }
 
@@ -208,10 +230,12 @@ namespace latinime {
         return JNI_TRUE;
     }
 
-    static void xlm_AdapterTrainer_setPlan(JNIEnv *env, jclass clazz, jlong statePtr, jint steps, jint ctx, jint batch, jint threads) {
+    // Returns the number of optimiser steps that will run (maxSteps is only an upper limit)
+    static jint xlm_AdapterTrainer_setPlan(JNIEnv *env, jclass clazz, jlong statePtr, jint maxSteps, jint ctx, jint batch, jint threads) {
         auto *state = reinterpret_cast<AdapterTrainerState *>(statePtr);
-        if(state == nullptr) return;
-        state->SetPlan(steps, ctx, batch, threads);
+        if(state == nullptr) return 0;
+        state->SetPlan(maxSteps, ctx, batch, threads);
+        return state->params.common.adam_n_iter;
     }
 
     static const JNINativeMethod sMethods[] = {
@@ -237,7 +261,7 @@ namespace latinime {
             },
             {
                     const_cast<char *>("setPlan"),
-                    const_cast<char *>("(JIIII)V"),
+                    const_cast<char *>("(JIIII)I"),
                     reinterpret_cast<void *>(xlm_AdapterTrainer_setPlan)
             },
 

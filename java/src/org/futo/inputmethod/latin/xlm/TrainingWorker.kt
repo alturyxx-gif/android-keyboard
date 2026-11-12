@@ -31,6 +31,7 @@ import org.futo.inputmethod.latin.xlm.personal.GeneralEnglishCheck
 import org.futo.inputmethod.latin.xlm.personal.PersonalAdapterFiles
 import org.futo.inputmethod.latin.xlm.personal.PersonalisationStore
 import org.futo.inputmethod.latin.xlm.personal.TrainingDataBuilder
+import org.futo.inputmethod.latin.xlm.personal.EverydayEnglish
 import org.futo.inputmethod.latin.xlm.personal.TrainingPlan
 import org.futo.inputmethod.latin.xlm.personal.TrainingRunRecord
 import java.io.File
@@ -119,11 +120,12 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
 
     private data class Quality(val personal: Float?, val general: Float?)
 
-    private suspend fun evaluateWith(modelInfo: ModelInfoLoader, locale: Locale, heldOut: List<String>, adapter: File?): Quality {
+    private suspend fun evaluateWith(modelInfo: ModelInfoLoader, locale: Locale, heldOut: List<String>, adapter: File?, multiplier: Float? = null): Quality {
         val lm = LanguageModel(
             applicationContext, null, modelInfo, locale,
             adapterOverride = adapter,
-            forceNoAdapter = adapter == null
+            forceNoAdapter = adapter == null,
+            adapterScaleMultiplier = multiplier
         )
         return try {
             Quality(
@@ -150,7 +152,10 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
 
         for ((language, modelInfo) in options) {
             val entries = history.filter { it.locale == language }
-            val data = TrainingDataBuilder.build(entries)
+            val data = TrainingDataBuilder.build(
+                entries,
+                replay = if (language.startsWith("en")) EverydayEnglish.REPLAY else emptyList()
+            )
             if (data.train.isEmpty()) continue
 
             val modelFile = modelInfo.path
@@ -166,7 +171,6 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
             val pending = PersonalAdapterFiles.pendingFor(modelFile)
             pending.delete()
 
-            val steps = TrainingPlan.steps(data.train.size)
             val builder = AdapterTrainerBuilder(modelFile.absolutePath, pending.absolutePath, "")
             builder.setLossFlow(TrainingWorkerStatus.loss)
             builder.setProgressFlow(TrainingWorkerStatus.progress)
@@ -179,7 +183,7 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
             }
 
             val threads = (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
-            trainer.setPlan(steps, TrainingPlan.CONTEXT_TOKENS, TrainingPlan.BATCH, threads)
+            val steps = trainer.setPlan(TrainingPlan.MAX_STEPS, TrainingPlan.CONTEXT_TOKENS, TrainingPlan.BATCH, threads)
 
             val powerManager = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
             val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FUTOLatinIME::modelTrainer")
@@ -204,15 +208,27 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
                 continue
             }
 
-            val after = evaluateWith(modelInfo, locale, data.heldOut, pending)
-
             // Keep the new adapter only if (a) your own held-out typing didn't get worse and
-            // (b) everyday English didn't get noticeably worse compared to the plain base model
-            val personalOk = before.personal == null || after.personal == null || after.personal >= before.personal - 0.05f
-            val generalOk = baseGeneral == null || after.general == null ||
-                    after.general >= baseGeneral - GeneralEnglishCheck.MAX_ALLOWED_DROP
+            // (b) everyday English didn't get noticeably worse compared to the plain base model.
+            // If full strength fails (b), try weaker strengths and keep the strongest that passes.
+            fun personalOk(q: Quality) = before.personal == null || q.personal == null || q.personal >= before.personal - 0.05f
+            fun generalOk(q: Quality) = baseGeneral == null || q.general == null ||
+                    q.general >= baseGeneral - GeneralEnglishCheck.MAX_ALLOWED_DROP
+            var after = evaluateWith(modelInfo, locale, data.heldOut, pending, 1f)
+            var multiplier = 1f
+            if (personalOk(after) && !generalOk(after)) {
+                for (m in listOf(0.5f, 0.25f)) {
+                    val q = evaluateWith(modelInfo, locale, data.heldOut, pending, m)
+                    after = q
+                    multiplier = m
+                    if (generalOk(q)) break
+                }
+            }
+            val personalOk = personalOk(after)
+            val generalOk = generalOk(after)
             val accepted = personalOk && generalOk
             if (accepted) {
+                PersonalAdapterFiles.setScaleMultiplier(pending, multiplier)
                 PersonalAdapterFiles.promote(modelFile)
             } else {
                 pending.delete()
@@ -231,6 +247,7 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
                 generalAfter = after.general,
                 accepted = accepted,
                 note = when {
+                    accepted && multiplier < 1f -> "Kept at ${(multiplier * 100).toInt()}% of your strength setting (full strength hurt everyday English)"
                     accepted -> ""
                     !personalOk -> "New training made your predictions worse, kept the previous version"
                     else -> "New training hurt general English too much, kept the previous version"

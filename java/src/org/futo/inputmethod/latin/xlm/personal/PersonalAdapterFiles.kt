@@ -22,6 +22,7 @@ val TypingModelThreads = SettingsKey(
  *   <model>.gguf            base model, never modified
  *   <model>.lora            active adapter
  *   <model>.lora.prev       previous adapter (for "undo last training")
+ *   <adapter>.scale         optional strength multiplier (0..1) chosen by the quality check
  */
 object PersonalAdapterFiles {
     fun adapterFor(model: File): File = File(model.parentFile, model.nameWithoutExtension + ".lora")
@@ -29,6 +30,27 @@ object PersonalAdapterFiles {
     fun pendingFor(model: File): File = File(model.parentFile, model.nameWithoutExtension + ".lora.new")
 
     fun activeAdapter(model: File): File? = adapterFor(model).takeIf { it.isFile && it.length() > 0 }
+
+    private fun scaleFileFor(adapter: File) = File(adapter.path + ".scale")
+
+    /**
+     * Strength multiplier for [adapter] (1.0 unless the quality check found the full strength
+     * hurt everyday English and kept the adapter at a lower strength).
+     */
+    fun scaleMultiplier(adapter: File): Float = try {
+        scaleFileFor(adapter).takeIf { it.isFile }?.readText()?.trim()?.toFloatOrNull()?.coerceIn(0f, 1f) ?: 1f
+    } catch (e: Exception) { 1f }
+
+    fun setScaleMultiplier(adapter: File, multiplier: Float) {
+        val f = scaleFileFor(adapter)
+        if (multiplier >= 1f) f.delete() else f.writeText(multiplier.toString())
+    }
+
+    private fun move(from: File, to: File): Boolean {
+        scaleFileFor(to).delete()
+        if (scaleFileFor(from).isFile) scaleFileFor(from).renameTo(scaleFileFor(to))
+        return from.renameTo(to)
+    }
 
     /** Makes a freshly trained adapter active, keeping the old one as the rollback point. */
     fun promote(model: File): Boolean {
@@ -38,9 +60,9 @@ object PersonalAdapterFiles {
         val prev = previousFor(model)
         if (active.isFile) {
             prev.delete()
-            active.renameTo(prev)
+            move(active, prev)
         }
-        return pending.renameTo(active)
+        return move(pending, active)
     }
 
     /** Goes back to the adapter from before the last training run. */
@@ -49,16 +71,18 @@ object PersonalAdapterFiles {
         val active = adapterFor(model)
         if (!prev.isFile) {
             // No earlier adapter: rolling back means no personalisation
+            scaleFileFor(active).delete()
             return active.delete()
         }
         active.delete()
-        return prev.renameTo(active)
+        return move(prev, active)
     }
 
     fun deleteAll(model: File) {
-        adapterFor(model).delete()
-        previousFor(model).delete()
-        pendingFor(model).delete()
+        listOf(adapterFor(model), previousFor(model), pendingFor(model)).forEach {
+            it.delete()
+            scaleFileFor(it).delete()
+        }
     }
 
     fun hasPrevious(model: File) = previousFor(model).isFile
