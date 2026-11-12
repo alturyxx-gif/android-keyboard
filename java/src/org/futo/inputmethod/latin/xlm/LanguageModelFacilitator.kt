@@ -661,7 +661,10 @@ public class LanguageModelFacilitator(
     }
 
     public fun loadHistoryLog() {
-        PersonalisationStore.ensureLoaded(context)
+        // Decrypting the history can take a moment; keep it off the main thread
+        lifecycleScope.launch(Dispatchers.IO) {
+            PersonalisationStore.ensureLoaded(context)
+        }
     }
 
     public fun onStartInput() {

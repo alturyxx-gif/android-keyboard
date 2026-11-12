@@ -146,9 +146,9 @@ object TrainingDataBuilder {
  */
 object TrainingPlan {
     const val MIN_STEPS = 32
-    const val MAX_STEPS = 600
+    const val MAX_STEPS = 300 // keeps the biggest run to roughly an hour on the phone (host test: ~6-11 s/step)
     const val BATCH = 4
-    const val CONTEXT_TOKENS = 128
+    const val CONTEXT_TOKENS = 96
 
     /**
      * About one pass over the training lines. Host tests on the real model showed that many

@@ -117,8 +117,17 @@ object PersonalisationStore {
                 memory.learn(prev, entry.committedWord)
             }
             _historySize.value = history.size
+            sinceFlush++
+        }
+        // Save every 50 words in the background, so little is lost if the keyboard is killed
+        if (sinceFlush >= 50) {
+            sinceFlush = 0
+            val appContext = context.applicationContext
+            Thread { flush(appContext) }.apply { priority = Thread.MIN_PRIORITY }.start()
         }
     }
+
+    @Volatile private var sinceFlush = 0
 
     /** Removes the most recent entry matching [key] (used when a word is unlearned). */
     fun removeLast(context: Context, key: String): HistoryLogForTraining? {

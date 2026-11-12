@@ -122,6 +122,23 @@ class WhisperGGMLHostTest {
         runBlocking { w.close() }
     }
 
+    /** Optional: NVIDIA Parakeet TDT 0.6B v2 GGUF via VOICE_PARAKEET_MODEL (imported like turbo). */
+    @Test
+    fun transcribesWithParakeet() {
+        val path = System.getenv("VOICE_PARAKEET_MODEL") ?: ""
+        assumeTrue("parakeet model not provided", available() && path.isNotEmpty() && File(path).exists())
+        VoiceEngineSettings.useGpu = false
+        val arch = File(path).inputStream().use { org.futo.inputmethod.latin.uix.GgufInfo.readArchitecture(it) }
+        assertFalse(org.futo.inputmethod.latin.uix.GgufInfo.isTextModel(arch))
+        val w = WhisperGGML(File(path))
+        val start = System.nanoTime()
+        val text = transcribe(w, context = "This is ignored by Parakeet")
+        val secs = (System.nanoTime() - start) / 1e9
+        println("Parakeet [$arch] transcript (%.1f s on this machine's CPU): %s".format(secs, text))
+        assertTrue(text.lowercase().contains("ask not what your country can do for you"))
+        runBlocking { w.close() }
+    }
+
     @Test
     fun invalidModelThrows() {
         assumeTrue("host voice library not built", available())

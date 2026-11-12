@@ -407,6 +407,8 @@ android {
             }
             def turbo = System.getenv('VOICE_TURBO_MODEL')
             if (turbo) environment 'VOICE_TURBO_MODEL', turbo
+            def parakeet = System.getenv('VOICE_PARAKEET_MODEL')
+            if (parakeet) environment 'VOICE_PARAKEET_MODEL', parakeet
             testLogging { showStandardStreams = true }
         }
     }
