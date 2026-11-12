@@ -43,11 +43,17 @@ Both APKs are signed with the debug key from the repo, not FUTO's key. That's wh
 - Besides Whisper, the new engine can run **Parakeet, Nemotron, Moonshine and FUTO's asr4all** GGUF models.
 - I turned on the ARM "dot-product" CPU instructions. Your phone has them, and they make the speech model and the typing model noticeably faster.
 
-**GPU (1.3)**
-- The code is written and falls back to the CPU automatically. It also detects a GPU crash and switches to the CPU next time.
-- The GPU engine itself isn't compiled in. ggml's Vulkan backend needs Khronos's Vulkan C++ headers, and adding that third-party repo was blocked by this environment's permission rules, so I left it alone.
-- The "Use the GPU for voice input" setting is therefore off and does nothing for now.
-- If you want GPU support, approve adding `KhronosGroup/Vulkan-Headers` as a submodule. After that it's a small CMake change (`TRANSCRIBE_VULKAN=ON`).
+**GPU (1.3)** (added in a follow-up after your approval)
+- The keyboard's speech engine is now built **with the Vulkan GPU backend**.
+  - It uses two pinned Khronos submodules: `Vulkan-Headers` v1.4.368 and `SPIRV-Headers` vulkan-sdk-1.4.363.0.
+  - Shaders are compiled with the NDK's `glslc`.
+- The setting *Voice Input → Use the GPU for voice input* is **off by default, so turn it on to try it**. Reasons:
+  - The GPU path couldn't be tested here.
+  - Vulkan on phone GPUs (Adreno) sometimes gives wrong output or runs slower than the CPU for some model types.
+- If voice input crashes on the GPU, the next attempt automatically goes back to the CPU.
+- If transcripts look wrong or it feels slower, just turn the setting off again.
+- Side effect: the GPU library is linked against Android 9+ Vulkan, so this custom build's voice input needs Android 9 or newer. Your phone is fine.
+- The standalone Voice Input app is still CPU-only.
 
 **Voice Input app**
 - Added **Whisper Turbo 809 (large-v3-turbo)** as a downloadable model. It downloads from Hugging Face and the SHA-256 is checked after download.
@@ -194,7 +200,7 @@ The keyboard works straight away with its built-in models: FUTO's tiny English W
   - **Personalisation (what it learned)**: learning is on by default. Strength 75%, threads 2.
 - **Voice Input**
   - **Use the text you've already typed**: on.
-  - **Use the GPU**: off (not in this build).
+  - **Use the GPU**: off by default. Experimental, so try turning it on.
 
 ---
 

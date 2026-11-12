@@ -27,6 +27,40 @@ if(ANDROID_ABI STREQUAL "arm64-v8a")
     set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16" CACHE STRING "" FORCE)
 endif()
 
+# Custom build: GPU (Vulkan) backend for the speech engine on Android.
+# - vulkan.hpp comes from the pinned Khronos Vulkan-Headers submodule (the NDK only ships C headers)
+# - spirv.hpp comes from the pinned Khronos SPIRV-Headers submodule
+# - the shader compiler (glslc) and libvulkan.so come from the NDK
+# The app falls back to the CPU at runtime if the GPU can't be used.
+option(VOICE_ENABLE_VULKAN "Build the Vulkan GPU backend for voice input" ON)
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a" AND VOICE_ENABLE_VULKAN)
+    set(VK_HEADERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Vulkan-Headers/include)
+    set(SPIRV_HEADERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/SPIRV-Headers/include)
+
+    set(Vulkan_INCLUDE_DIR ${VK_HEADERS_DIR} CACHE PATH "" FORCE)
+    set(Vulkan_GLSLC_EXECUTABLE ${ANDROID_NDK}/shader-tools/${ANDROID_NDK_HOST_SYSTEM_NAME}/glslc CACHE FILEPATH "" FORCE)
+    # ggml needs Vulkan 1.1+ entry points (e.g. vkGetPhysicalDeviceFeatures2), which the NDK
+    # only exposes in libvulkan stubs for API 28+. Link the API 33 stub: the real library on
+    # the phone (Android 15) has them. Consequence: voice input in this custom build needs
+    # Android 9 or newer.
+    set(ANDROID_VULKAN_LIB ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/33/libvulkan.so)
+    set(Vulkan_LIBRARY ${ANDROID_VULKAN_LIB} CACHE FILEPATH "" FORCE)
+
+    # Minimal package config so ggml's find_package(SPIRV-Headers CONFIG) succeeds
+    set(SPIRV_SHIM_DIR ${CMAKE_CURRENT_BINARY_DIR}/spirv-headers-shim)
+    file(WRITE ${SPIRV_SHIM_DIR}/SPIRV-HeadersConfig.cmake
+        "if(NOT TARGET SPIRV-Headers::SPIRV-Headers)\n"
+        "  add_library(SPIRV-Headers::SPIRV-Headers INTERFACE IMPORTED)\n"
+        "  set_target_properties(SPIRV-Headers::SPIRV-Headers PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \"${SPIRV_HEADERS_DIR}\")\n"
+        "endif()\n")
+    set(SPIRV-Headers_DIR ${SPIRV_SHIM_DIR} CACHE PATH "" FORCE)
+
+    # Vulkan C++ headers must win over the NDK sysroot's older C-only copy
+    include_directories(BEFORE ${VK_HEADERS_DIR} ${SPIRV_HEADERS_DIR})
+
+    set(TRANSCRIBE_VULKAN ON CACHE BOOL "" FORCE)
+endif()
+
 add_subdirectory(transcribe.cpp)
 
 set(CMAKE_CXX_FLAGS "-O3 -Wall -Wextra -g3")
