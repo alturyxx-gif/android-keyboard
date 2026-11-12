@@ -19,9 +19,9 @@
 
 namespace latinime {
     // Personalisation training settings (tuned on the host with exp_train, see tests_host)
-static constexpr float kTrainingEpochs = 2.0f;
+static constexpr float kTrainingEpochs = 6.0f;
 static constexpr int kMinTrainingSteps = 4;
-static constexpr float kTrainingLearningRate = 1e-3f;
+static constexpr float kTrainingLearningRate = 2e-3f;
 
 struct AdapterTrainerState {
         std::string baseModelPath;

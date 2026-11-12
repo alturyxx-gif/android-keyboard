@@ -207,7 +207,7 @@ object TrainingDataBuilder {
 }
 
 /** Training run limits (Stage 2.5). The step count itself is worked out natively from the
- *  number of tokens (about two passes over the data), see AdapterTrainer.cpp. */
+ *  number of tokens (about six passes over the de-duplicated data), see AdapterTrainer.cpp. */
 object TrainingPlan {
     const val MAX_STEPS = 300 // upper limit, roughly half an hour on the phone
     const val BATCH = 4
