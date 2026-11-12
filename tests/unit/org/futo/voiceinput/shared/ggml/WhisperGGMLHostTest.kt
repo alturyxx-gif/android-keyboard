@@ -161,6 +161,42 @@ class WhisperGGMLHostTest {
         }
     }
 
+    /** GPU is only allowed for Parakeet-type models; decided from the file header. */
+    @Test
+    fun gpuOnlyAllowedForParakeetModels() {
+        assumeTrue(available())
+        val diag = File.createTempFile("voice_diag", ".txt")
+        VoiceEngineSettings.diagnosticsFile = diag
+        VoiceEngineSettings.gpuCrashMarker = null
+        VoiceEngineSettings.gpuFailedMarker = null
+        VoiceEngineSettings.useGpu = true
+
+        fun noteFor(path: File): String {
+            val w = WhisperGGML(path)
+            transcribe(w)
+            runBlocking { w.close() }
+            return diag.readText()
+        }
+
+        // FUTO's legacy Whisper .bin: never on the GPU
+        assertTrue(noteFor(model).contains("GPU not used for Whisper models"))
+
+        val turbo = System.getenv("VOICE_TURBO_MODEL")?.let { File(it) }
+        if (turbo != null && turbo.exists()) {
+            assertTrue(noteFor(turbo).contains("GPU not used for whisper models"))
+        }
+
+        // Parakeet is allowed: on this machine there's no GPU, so it reports that instead
+        val parakeet = System.getenv("VOICE_PARAKEET_MODEL")?.let { File(it) }
+        if (parakeet != null && parakeet.exists()) {
+            val note = noteFor(parakeet)
+            assertFalse(note.contains("GPU not used for"))
+        }
+        VoiceEngineSettings.useGpu = false
+        VoiceEngineSettings.diagnosticsFile = null
+        diag.delete()
+    }
+
     @Test
     fun invalidModelThrows() {
         assumeTrue("host voice library not built", available())

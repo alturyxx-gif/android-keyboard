@@ -85,8 +85,18 @@ class VoicePowerTest(private val context: Context) {
         val firstCurrent = battery.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
         if (firstCurrent == 0L || firstCurrent == Long.MIN_VALUE) throw TestError("This phone doesn't report battery current, so power can't be measured.")
 
-        val model = ResourceHelper.tryFindingVoiceInputModelForLocale(context, Locale.ENGLISH)
+        // Use the same model the keyboard uses: voice models are imported per language variant
+        // (e.g. "English (US)"), so try the phone's language and the common English variants.
+        val candidates = listOf(Locale.getDefault(), Locale.US, Locale.UK, Locale("en", "CA"),
+            Locale("en", "AU"), Locale("en", "IN"), Locale.ENGLISH)
+        val importedLocale = candidates.firstOrNull { ResourceHelper.findFileForKind(context, it, org.futo.inputmethod.latin.uix.FileKind.VoiceInput) != null }
+        val model = ResourceHelper.tryFindingVoiceInputModelForLocale(context, importedLocale ?: Locale.ENGLISH)
             ?: throw TestError("No English voice model found.")
+        val modelDescription = if (importedLocale != null) {
+            "your imported voice model for ${importedLocale.displayName}"
+        } else {
+            "the keyboard's built-in Whisper model (no imported English model found)"
+        }
         val audio = loadAudio()
         val audioSeconds = audio.size / 16000.0
 
@@ -107,7 +117,10 @@ class VoicePowerTest(private val context: Context) {
         }
 
         try {
-            if (!gpu.isUsingGpu) throw TestError("The GPU isn't available for voice input on this phone (it fell back to the CPU), so there is nothing to compare. Check \"Last voice input run\" in Voice Input settings.")
+            if (!gpu.isUsingGpu) throw TestError(
+                if (importedLocale == null) "The built-in Whisper model always runs on the CPU (Whisper models gave wrong text on this GPU). Import a Parakeet model for English to compare CPU and GPU."
+                else "The GPU wasn't used for $modelDescription. Only Parakeet-type models run on the GPU (Whisper models gave wrong text on it); other reasons are shown under \"Last voice input run\" in Voice Input settings."
+            )
 
             suspend fun transcribe(w: WhisperGGML): String =
                 w.infer(audio, "", arrayOf("en"), arrayOf(), DecodingMode.BeamSearch5, false, {})
@@ -181,8 +194,12 @@ class VoicePowerTest(private val context: Context) {
             val distinct = all.map { it.sample.currentRaw }.distinct().size
             val report = buildString {
                 append("Voice power test — ${Build.MANUFACTURER} ${Build.MODEL}\n")
-                append("Model: ${model.key(context)}\n")
+                append("Model: $modelDescription\n")
                 append("Test audio: %.1f s of speech, transcribed repeatedly\n\n".format(audioSeconds))
+                val agreement = PowerMath.transcriptAgreement(cpuText, gpuText)
+                if (agreement < PowerMath.MIN_AGREEMENT) {
+                    append("WARNING: the GPU's transcript doesn't match the CPU's (%d%% of words agree), so the GPU is computing this model incorrectly. The energy numbers below are not a fair comparison, and this model should not be used on the GPU.\n\n".format((agreement * 100).toInt()))
+                }
                 append(PowerMath.verdict(cpuR, gpuR, audioSeconds)).append("\n\n")
                 fun line(name: String, r: PowerMath.EngineResult?) {
                     if (r == null) { append("$name: no data\n"); return }

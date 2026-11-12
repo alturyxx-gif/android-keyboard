@@ -62,4 +62,14 @@ class PowerMathTest {
         assertTrue(PowerMath.verdict(cpu, cpu, 11.0).contains("about the same"))
         assertTrue(PowerMath.verdict(null, cpu, 11.0).startsWith("Not enough"))
     }
+
+    @Test
+    fun transcriptAgreementDetectsBrokenGpuOutput() {
+        val cpu = "And so my fellow Americans ask not what your country can do for you"
+        assertTrue(PowerMath.transcriptAgreement(cpu, "And so, my fellow Americans, ask not what your country can do for you.") > 0.95)
+        // The garbage the GPU produced with Whisper tiny on the S25 Ultra
+        assertTrue(PowerMath.transcriptAgreement(cpu, "!....London, oh") < PowerMath.MIN_AGREEMENT)
+        assertTrue(PowerMath.transcriptAgreement(cpu, "! Heynumber of arms, thank booze apart correctionsanuts") < PowerMath.MIN_AGREEMENT)
+        assertEquals(1.0, PowerMath.transcriptAgreement("", ""), 0.0)
+    }
 }

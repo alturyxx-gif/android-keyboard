@@ -1,5 +1,6 @@
 #include <string>
 #include <cstring>
+#include <functional>
 #include <sys/stat.h>
 #include <atomic>
 #include <deque>
@@ -208,6 +209,46 @@ static std::string gpu_cache_summary() {
            " compiled" + (bad ? ", " + std::to_string(bad) + " stale cache entries replaced" : std::string());
 }
 
+// Reads general.architecture from a GGUF file header without loading the model ("" if the file
+// isn't GGUF, e.g. FUTO's legacy Whisper .bin files).
+static std::string read_gguf_architecture(const std::string &path) {
+    FILE *f = fopen(path.c_str(), "rb");
+    if(!f) return "";
+    auto rd = [&](void *p, size_t n) { return fread(p, 1, n, f) == n; };
+    auto skip = [&](uint64_t n) { return fseek(f, (long)n, SEEK_CUR) == 0; };
+    std::string result;
+    char magic[4]; uint32_t version = 0; uint64_t n_tensors = 0, n_kv = 0;
+    if(rd(magic, 4) && memcmp(magic, "GGUF", 4) == 0 && rd(&version, 4) && version >= 2 &&
+       rd(&n_tensors, 8) && rd(&n_kv, 8)) {
+        // value sizes for GGUF scalar types 0..12 (8 = string, 9 = array are variable)
+        static const int sizes[13] = {1, 1, 2, 2, 4, 4, 4, 1, 0, 0, 8, 8, 8};
+        std::function<bool(uint32_t)> skip_value = [&](uint32_t type) -> bool {
+            if(type == 8) { uint64_t len; return rd(&len, 8) && skip(len); }
+            if(type == 9) {
+                uint32_t item; uint64_t count;
+                if(!rd(&item, 4) || !rd(&count, 8)) return false;
+                if(item < 13 && sizes[item] > 0) return skip(count * (uint64_t)sizes[item]);
+                for(uint64_t i = 0; i < count; i++) if(!skip_value(item)) return false;
+                return true;
+            }
+            return type < 13 && sizes[type] > 0 && skip((uint64_t)sizes[type]);
+        };
+        for(uint64_t i = 0; i < n_kv && i < 512; i++) {
+            uint64_t klen; if(!rd(&klen, 8) || klen > 4096) break;
+            std::string key(klen, '\0'); if(!rd(&key[0], klen)) break;
+            uint32_t type; if(!rd(&type, 4)) break;
+            if(key == "general.architecture" && type == 8) {
+                uint64_t len; if(!rd(&len, 8) || len > 4096) break;
+                result.resize(len); if(!rd(&result[0], len)) result.clear();
+                break;
+            }
+            if(!skip_value(type)) break;
+        }
+    }
+    fclose(f);
+    return result;
+}
+
 // Loads ggml's backend modules (CPU, and the optional OpenCL GPU module) once. With
 // GGML_BACKEND_DL even the CPU backend is a module, so this must run before any model opens.
 // First try the folder libtranscribe.so lives in; if that finds no devices, use the app's
@@ -258,6 +299,21 @@ static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboo
     long num_procs = sysconf(_SC_NPROCESSORS_ONLN) - 2;
     if(num_procs < 2) num_procs = 2;
     if(num_procs > 6) num_procs = 6;
+
+    // Only Parakeet-family models (Parakeet, Nemotron) are confirmed to compute correctly on the
+    // S25 Ultra's GPU. Whisper models produced garbage text there ("!....London, oh"), which
+    // the empty-output check can't catch, so other model types always run on the CPU. Decided
+    // from the file header, before the GPU is touched.
+    if(use_gpu) {
+        std::string arch = read_gguf_architecture(model_dir_str);
+        if(arch != "parakeet") {
+            gpu_step(("model type '" + (arch.empty() ? std::string("whisper (.bin)") : arch) + "' not allowed on GPU, using CPU").c_str());
+            gpu_log_file_close();
+            state->last_error = "GPU not used for " + (arch.empty() ? std::string("Whisper") : arch) +
+                    " models (they gave wrong text on this GPU), used CPU";
+            use_gpu = JNI_FALSE;
+        }
+    }
 
     transcribe_status result = TRANSCRIBE_ERR_GGUF;
     if(use_gpu) engine_log_start();

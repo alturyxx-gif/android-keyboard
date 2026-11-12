@@ -72,6 +72,25 @@ object PowerMath {
         )
     }
 
+    const val MIN_AGREEMENT = 0.7
+
+    /**
+     * Fraction (0..1) of the CPU transcript's words that also appear in the GPU transcript.
+     * Used to detect a GPU that computes the model incorrectly.
+     */
+    fun transcriptAgreement(cpu: String, gpu: String): Double {
+        fun words(s: String) = Regex("[a-z0-9']+").findAll(s.lowercase()).map { it.value }.toList()
+        val a = words(cpu)
+        if (a.isEmpty()) return if (words(gpu).isEmpty()) 1.0 else 0.0
+        val b = words(gpu).groupingBy { it }.eachCount().toMutableMap()
+        var matched = 0
+        for (w in a) {
+            val n = b[w] ?: 0
+            if (n > 0) { matched++; b[w] = n - 1 }
+        }
+        return matched.toDouble() / a.size
+    }
+
     /** One-line verdict comparing GPU with CPU. */
     fun verdict(cpu: EngineResult?, gpu: EngineResult?, audioSeconds: Double): String {
         if (cpu == null || gpu == null) return "Not enough data to compare."
