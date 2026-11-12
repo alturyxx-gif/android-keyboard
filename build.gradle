@@ -405,6 +405,8 @@ android {
                 systemProperty 'java.library.path', voiceLib
                 environment 'VOICE_HOST_LIB_DIR', voiceLib
             }
+            def turbo = System.getenv('VOICE_TURBO_MODEL')
+            if (turbo) environment 'VOICE_TURBO_MODEL', turbo
             testLogging { showStandardStreams = true }
         }
     }

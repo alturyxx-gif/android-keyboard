@@ -99,6 +99,29 @@ class WhisperGGMLHostTest {
         marker.delete()
     }
 
+    /**
+     * Stage 1.2: the real Whisper large-v3-turbo GGUF (as imported into the keyboard).
+     * Pass its path via VOICE_TURBO_MODEL. Skipped otherwise.
+     */
+    @Test
+    fun transcribesWithWhisperLargeV3Turbo() {
+        val turboPath = System.getenv("VOICE_TURBO_MODEL") ?: ""
+        assumeTrue("turbo model not provided", available() && turboPath.isNotEmpty() && File(turboPath).exists())
+        VoiceEngineSettings.useGpu = false
+        // The import screen must classify it as a voice model
+        val arch = File(turboPath).inputStream().use { org.futo.inputmethod.latin.uix.GgufInfo.readArchitecture(it) }
+        assertEquals("whisper", arch)
+        assertFalse(org.futo.inputmethod.latin.uix.GgufInfo.isTextModel(arch))
+
+        val w = WhisperGGML(File(turboPath))
+        val start = System.nanoTime()
+        val text = transcribe(w, context = "My fellow Americans,")
+        val secs = (System.nanoTime() - start) / 1e9
+        println("Turbo transcript (%.1f s on this machine's CPU): %s".format(secs, text))
+        assertTrue(text.lowercase().contains("ask not what your country can do for you"))
+        runBlocking { w.close() }
+    }
+
     @Test
     fun invalidModelThrows() {
         assumeTrue("host voice library not built", available())
