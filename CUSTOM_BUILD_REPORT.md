@@ -200,14 +200,33 @@ The keyboard works straight away with its built-in models: FUTO's tiny English W
 
 ## 6. Commits
 
+All pushed to `claude/keyboard-voice-suggestions-d59gth`. No pull requests were opened.
+
 **android-keyboard**
-- Add improvement plan
-- Add 'custom' build flavor that installs alongside the official keyboard
-- Add live grammar correction and rebuild personalisation (Phases 2 and 3)
-- Move keyboard voice input to transcribe.cpp; text context; tests (Phase 1)
-- Host test with the real Whisper large-v3-turbo GGUF
-- Training/plan tuning, general-English guard, background history saving (final commit)
+- `d2157f2` Add improvement plan
+- `4dc5ed6` Add 'custom' build flavor that installs alongside the official keyboard
+- `e4dd710` Add live grammar correction and rebuild personalisation (Phases 2 and 3)
+- `7e24ebf` Move keyboard voice input to transcribe.cpp; text context; tests (Phase 1)
+- `2a904fd` Host test with the real Whisper large-v3-turbo GGUF
+- `7629ea9` Tune training size; save history in background; Parakeet test
+- `7c5d812` Keep TrainingWorker through R8; add this report
 
 **voice-input**
-- Add 'custom' build flavor that installs alongside the official app
-- Add Whisper large-v3-turbo download, fix audio window for stock models
+- `b8037a7` Add 'custom' build flavor that installs alongside the official app
+- `f7870e7` Add Whisper large-v3-turbo download, fix audio window for stock models
+- `c93dd0b` Sign the custom build with a fixed public debug key
+
+## 7. How to rebuild
+
+```
+# keyboard (needs Android SDK + NDK 28.2; submodules incl. transcribe.cpp)
+VERSION_CODE=... VERSION_NAME=... ./gradlew assembleCustomRelease
+# tests (optional: VOICE_HOST_LIB_DIR=<desktop build of voiceinput-shared/src/main/cpp>)
+./gradlew testCustomReleaseUnitTest
+# native typing-model tests with the real model (desktop, clang)
+cmake -S native/jni/tests_host -B /tmp/xlm-host -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build /tmp/xlm-host
+/tmp/xlm-host/test_scoring java/res-large/raw/ml4_q6_k.gguf
+
+# voice input app (NDK 30)
+VERSION_CODE=... VERSION_NAME=... ./gradlew assembleCustomRelease
+```
