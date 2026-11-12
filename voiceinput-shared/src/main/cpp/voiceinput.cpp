@@ -332,7 +332,9 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
         params.family = &wp.ext;
     }
 
+    auto run_start = std::chrono::steady_clock::now();
     auto result = transcribe_run(state->session, samples, num_samples, &params);
+    const long gpu_ms = (long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - run_start).count();
 
     const bool attempted_gpu = state->using_gpu;
     // GPU safety net: if the GPU run failed, or produced no text for over a second of audio,
@@ -347,6 +349,7 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
             state->last_error = result != TRANSCRIBE_OK
                     ? std::string("GPU run failed (") + transcribe_status_string(result) + "), used CPU instead"
                     : std::string("GPU returned no text, used CPU instead");
+            state->last_error += " (GPU attempt took " + std::to_string(gpu_ms) + " ms)";
             AKLOGE("[voice] %s", state->last_error.c_str());
 
             state->gpu_log = engine_log_take();
