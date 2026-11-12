@@ -156,6 +156,7 @@ private class VoiceInputActionWindow(
         VoiceEngineSettings.gpuFailedMarker = java.io.File(context.noBackupFilesDir, "voice_gpu_failed")
         VoiceEngineSettings.diagnosticsFile = java.io.File(context.noBackupFilesDir, "voice_last_run.txt")
         VoiceEngineSettings.nativeLibDir = context.applicationInfo.nativeLibraryDir ?: ""
+        VoiceEngineSettings.gpuLogFile = java.io.File(context.noBackupFilesDir, "voice_gpu_log.txt")
 
         val enableSound = context.getSetting(ENABLE_SOUND)
         val verboseFeedback = false//context.getSetting(VERBOSE_PROGRESS)

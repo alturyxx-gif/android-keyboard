@@ -90,6 +90,29 @@ static std::mutex g_log_mutex;
 static std::deque<std::string> g_engine_log;
 static std::atomic<bool> g_capture_log{false};
 
+// Crash-safe copy of the GPU attempt log: every line is written and flushed to a file as it
+// happens, so if the GPU driver crashes the whole process, the next run can still show it.
+static FILE *g_gpu_log_file = nullptr;
+static void gpu_log_file_open(const std::string &path) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    if(g_gpu_log_file) { fclose(g_gpu_log_file); g_gpu_log_file = nullptr; }
+    if(!path.empty()) g_gpu_log_file = fopen(path.c_str(), "w");
+}
+static void gpu_log_file_close() {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    if(g_gpu_log_file) { fclose(g_gpu_log_file); g_gpu_log_file = nullptr; }
+}
+static void gpu_log_write_locked(const std::string &line) {
+    if(g_gpu_log_file) { fputs(line.c_str(), g_gpu_log_file); fputc('\n', g_gpu_log_file); fflush(g_gpu_log_file); }
+}
+// Our own progress markers, so a crash log shows which step was running
+static void gpu_step(const char *what) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    std::string line = std::string("[step] ") + what;
+    gpu_log_write_locked(line);
+    if(g_capture_log) g_engine_log.push_back(line);
+}
+
 static void engine_log_start() {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     g_engine_log.clear();
@@ -120,6 +143,7 @@ void log_callback(transcribe_log_level level, const char *msg, void *userdata) {
         const char *tag = level >= TRANSCRIBE_LOG_LEVEL_ERROR ? "E " : level >= TRANSCRIBE_LOG_LEVEL_WARN ? "W " : "";
         std::lock_guard<std::mutex> lock(g_log_mutex);
         g_engine_log.push_back(std::string(tag) + line);
+        gpu_log_write_locked(std::string(tag) + line);
         while(g_engine_log.size() > 80) g_engine_log.pop_front();
     }
 }
@@ -193,8 +217,12 @@ static bool session_on_gpu(struct transcribe_session *session) {
 }
 
 // Keyboard (custom build): openNative(path, useGpu, nativeLibDir)
-static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboolean use_gpu, jstring native_lib_dir) {
+static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboolean use_gpu, jstring native_lib_dir, jstring gpu_log_path) {
     std::string model_dir_str = jstring2string(env, model_dir);
+    if(use_gpu) {
+        gpu_log_file_open(gpu_log_path ? jstring2string(env, gpu_log_path) : "");
+        gpu_step("loading backends");
+    }
     ensure_backends(native_lib_dir ? jstring2string(env, native_lib_dir) : "");
 
     auto *state = new WhisperModelState();
@@ -208,12 +236,14 @@ static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboo
 
     transcribe_status result = TRANSCRIBE_ERR_GGUF;
     if(use_gpu) engine_log_start();
+    if(use_gpu) gpu_step("opening model on GPU");
     if(use_gpu) {
         // Stage 1.3: try the GPU first (AUTO picks the OpenCL GPU device when its module
         // loaded), fall back to the CPU if no GPU is available
         result = open_session(model_dir_str, TRANSCRIBE_BACKEND_AUTO, (int)num_procs, &state->session);
         if(result == TRANSCRIBE_OK && state->session && session_on_gpu(state->session)) {
             state->using_gpu = true;
+            gpu_step("model opened on GPU");
         } else if(result == TRANSCRIBE_OK && state->session) {
             // Opened fine but on the CPU: no usable GPU device (e.g. OpenCL driver not available)
             state->gpu_log = g_backend_init_log + engine_log_take();
@@ -225,6 +255,8 @@ static jlong WhisperGGML_open(JNIEnv *env, jclass clazz, jstring model_dir, jboo
             if(state->session) { transcribe_session_free(state->session); state->session = nullptr; }
         }
     }
+
+    if(use_gpu && !state->using_gpu) gpu_log_file_close();
 
     if(!state->session) {
         // (If AUTO already landed on the CPU above, that session is reused.)
@@ -371,6 +403,7 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
         params.family = &wp.ext;
     }
 
+    if(state->using_gpu) gpu_step("running speech model on GPU (first run compiles GPU kernels)");
     auto run_start = std::chrono::steady_clock::now();
     auto result = transcribe_run(state->session, samples, num_samples, &params);
     const long gpu_ms = (long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - run_start).count();
@@ -407,7 +440,9 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
         }
     }
     env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
+    if(attempted_gpu) gpu_step("GPU attempt finished");
     if(attempted_gpu && state->gpu_log.empty()) state->gpu_log = g_backend_init_log + engine_log_take();
+    if(attempted_gpu) gpu_log_file_close();
 
     std::string output;
     if(result == TRANSCRIBE_ERR_LANG_BAILED) {
@@ -699,7 +734,7 @@ static void WhisperGGML_cancel(JNIEnv *env, jclass clazz, jlong handle) {
 static const JNINativeMethod sMethods[] = {
         {
                 const_cast<char *>("openNative"),
-                const_cast<char *>("(Ljava/lang/String;ZLjava/lang/String;)J"),
+                const_cast<char *>("(Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;)J"),
                 reinterpret_cast<void *>(WhisperGGML_open)
         },
         {

@@ -41,6 +41,9 @@ object VoiceEngineSettings {
      */
     @Volatile var gpuFailedMarker: File? = null
 
+    /** Crash-safe log of the last GPU attempt (written line by line by the native engine). */
+    @Volatile var gpuLogFile: File? = null
+
     /** The app's native library folder (where the optional GPU module lives). */
     @Volatile var nativeLibDir: String = ""
 
@@ -85,7 +88,9 @@ class WhisperGGML(
         if (tryGpu && marker != null && marker.exists()) {
             Log.w("WhisperGGML", "Previous GPU attempt crashed, using CPU")
             VoiceEngineSettings.gpuDisabledAfterCrash = true
-            gpuNote = "GPU skipped: it crashed last time"
+            val crashLog = try { VoiceEngineSettings.gpuLogFile?.takeIf { it.exists() }?.readText()?.trim() } catch (_: Exception) { null }
+            gpuNote = "GPU skipped: it crashed last time" +
+                    if (!crashLog.isNullOrEmpty()) "\n\nLog from the GPU attempt that crashed (last line = where it crashed):\n$crashLog" else ""
             tryGpu = false
         }
         if (tryGpu && VoiceEngineSettings.gpuFailedMarker?.exists() == true) {
@@ -94,7 +99,7 @@ class WhisperGGML(
         }
 
         if (tryGpu) try { marker?.writeText("gpu") } catch (_: Exception) { }
-        handle = openNative(file.absolutePath, tryGpu, VoiceEngineSettings.nativeLibDir)
+        handle = openNative(file.absolutePath, tryGpu, VoiceEngineSettings.nativeLibDir, VoiceEngineSettings.gpuLogFile?.absolutePath ?: "")
         if (handle != 0L) isUsingGpu = isUsingGpuNative(handle)
         if (tryGpu && !isUsingGpu && gpuNote.isEmpty()) gpuNote = "GPU not available, used CPU"
         if (!isUsingGpu) try { marker?.delete() } catch (_: Exception) { }
@@ -188,7 +193,7 @@ class WhisperGGML(
         handle = 0L
     }
 
-    private external fun openNative(path: String, useGpu: Boolean, nativeLibDir: String): Long
+    private external fun openNative(path: String, useGpu: Boolean, nativeLibDir: String, gpuLogPath: String): Long
     private external fun inferNative(handle: Long, samples: FloatArray, prompt: String, textContext: String, languages: Array<String>, bailLanguages: Array<String>, decodingMode: Int, suppressNonSpeechTokens: Boolean): String?
     private external fun isUsingGpuNative(handle: Long): Boolean
     private external fun lastErrorNative(handle: Long): String?
