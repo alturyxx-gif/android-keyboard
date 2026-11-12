@@ -15,5 +15,5 @@
     <string name="voice_use_text_context_title">Use the text you\'ve already typed</string>
     <string name="voice_use_text_context_subtitle">Gives Whisper models the text before the cursor as context, for better names, punctuation and casing. Never used in password fields.</string>
     <string name="voice_use_gpu_title">Use the GPU for voice input</string>
-    <string name="voice_use_gpu_subtitle">Experimental. Runs the speech model on the phone\'s GPU (OpenCL, Adreno-optimised). The first use can freeze for a few seconds while it prepares. If it fails or crashes it switches back to the CPU automatically.</string>
+    <string name="voice_use_gpu_subtitle">Experimental. Runs the speech model on the phone\'s GPU (OpenCL). The first use can freeze for a few seconds while it prepares. If it fails or crashes it switches back to the CPU automatically.</string>
 </resources>

@@ -27,8 +27,7 @@ if(ANDROID_ABI STREQUAL "arm64-v8a")
     set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16" CACHE STRING "" FORCE)
 endif()
 
-# Custom build: GPU backend for the speech engine on Android = OpenCL with Qualcomm's
-# Adreno-optimised kernels. (Vulkan was tried first: on the Adreno 830 it produced empty
+# Custom build: GPU backend for the speech engine on Android = OpenCL (generic ggml kernels). (Vulkan was tried first: on the Adreno 830 it produced empty
 # transcripts and was slower than the CPU, so it is not built.)
 #
 # - CL headers come from the pinned Khronos OpenCL-Headers submodule.
@@ -45,7 +44,10 @@ if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a" AND VOICE_ENABLE_OPENCL)
     set(OpenCL_LIBRARY voice_opencl_shim CACHE STRING "" FORCE)
 
     set(GGML_OPENCL ON CACHE BOOL "" FORCE)
-    set(GGML_OPENCL_USE_ADRENO_KERNELS ON CACHE BOOL "" FORCE)
+    # Qualcomm's Adreno-tuned kernel set is OFF: on the S25 Ultra's driver (OpenCL 3.0
+    # QUALCOMM build 0800.64.8, compiler E031.47.18.56) compiling gemv_noshuffle_q5_k_f32
+    # (kernel 140 of 141) crashes the whole process. The generic OpenCL kernels compiled fine.
+    set(GGML_OPENCL_USE_ADRENO_KERNELS OFF CACHE BOOL "" FORCE)
     set(GGML_OPENCL_EMBED_KERNELS ON CACHE BOOL "" FORCE)
     set(TRANSCRIBE_VULKAN OFF CACHE BOOL "" FORCE)
 endif()
