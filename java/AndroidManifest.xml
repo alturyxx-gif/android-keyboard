@@ -158,7 +158,8 @@
             </intent-filter>
         </receiver>
 
-        <!--
+        <!-- Custom build: re-enabled. Personalisation training runs as a foreground job; without
+             this declaration Android 14+ throws when WorkManager calls startForeground(). -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="specialUse"
@@ -168,7 +169,6 @@
                 android:value="Neural network model training"/>
 
         </service>
-        -->
         <activity
             android:name=".payment.PaymentCompleteActivity"
             android:exported="true"

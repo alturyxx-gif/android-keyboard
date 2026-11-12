@@ -378,7 +378,10 @@ class LanguageModel(
      * Used by live grammar checking.
      */
     suspend fun scoreContinuations(prefix: String, continuations: List<String>): FloatArray? = withContext(LanguageModelScope) {
-        if(!loadModelIfNeeded()) return@withContext null
+        // loadModelIfNeeded() returns false when it had to load the model just now; that's fine
+        // here (the training worker's quality check calls this on a freshly created model).
+        loadModelIfNeeded()
+        if(mNativeState == 0L) return@withContext null
         if(continuations.isEmpty()) return@withContext FloatArray(0)
         val out = FloatArray(continuations.size) { Float.NEGATIVE_INFINITY }
         scoreContinuationsNative(mNativeState, prefix, continuations.toTypedArray(), out)

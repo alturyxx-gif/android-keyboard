@@ -71,13 +71,33 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
             }
             val result = train()
             TrainingWorkerStatus.state.emit(result)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // Catch everything (incl. Errors): a crash here would make Android retry the job
+            // over and over. Record it so the Personalisation screen can show it instead.
             Log.e(TAG, "Training failed", e)
+            recordTrainingError(e)
             TrainingWorkerStatus.state.emit(TrainingStateWithModel(TrainingState.FatalError, null))
         } finally {
             TrainingWorkerStatus.isTraining.value = false
         }
         return Result.success()
+    }
+
+    private fun recordTrainingError(e: Throwable) {
+        try {
+            val sw = java.io.StringWriter()
+            e.printStackTrace(java.io.PrintWriter(sw))
+            java.io.File(applicationContext.noBackupFilesDir, "last_crash.txt").writeText(
+                "Personalisation training failed (handled, the app did not crash)\nTime: ${java.util.Date()}\n\n$sw"
+            )
+            PersonalisationStore.addRun(applicationContext, TrainingRunRecord(
+                timeStamp = System.currentTimeMillis() / 1000, modelName = "", examples = 0,
+                historyEntries = 0, steps = 0, minutes = 0f, accepted = false,
+                note = "Training failed: ${e.javaClass.simpleName}: ${e.message ?: ""}".take(300)
+            ))
+        } catch (_: Throwable) { }
     }
 
     /** Average log-probability of each held-out word given its context. Higher = better. */

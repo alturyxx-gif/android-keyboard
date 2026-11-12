@@ -105,6 +105,25 @@ fun PersonalisationScreen(navController: NavHostController) {
         Tip("Everything here stays on your phone. Your typing history is stored encrypted and " +
                 "only the last 60 days are kept. Training runs while the phone is charging.")
 
+        // Custom build: details of the last crash / training error, with a Copy button
+        val lastError = remember(refresh) {
+            try { java.io.File(context.noBackupFilesDir, "last_crash.txt").takeIf { it.exists() }?.readText() } catch (e: Exception) { null }
+        }
+        if (!lastError.isNullOrBlank()) {
+            val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+            Tip("Last error:\n" + lastError.take(1500))
+            Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(lastError))
+                    Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                }) { Text("Copy error details") }
+                TextButton(onClick = {
+                    java.io.File(context.noBackupFilesDir, "last_crash.txt").delete()
+                    refresh++
+                }) { Text("Clear") }
+            }
+        }
+
         SettingToggleDataStore(
             title = "Learn from my typing",
             subtitle = "Trains a small personal adjustment for the typing model, and remembers new words straight away",
