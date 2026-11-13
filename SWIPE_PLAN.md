@@ -135,7 +135,10 @@ A small Python project in a new folder `swipe-training/` in this repo.
 - 4.3 You paste me the table. If it doesn't win, I adjust the size or training settings
   and you run again.
 
-## Stage 5 — Adapt to your swiping style (your PC)
+## Stage 5 — Adapt to your swiping style (your PC, later)
+
+Runs whenever you've collected enough swipes (after 1–2 weeks of recording); it doesn't block
+anything else. Short run: minutes to about an hour, since it starts from the Stage 4 model.
 
 - 5.1 `finetune_personal.py`: takes the best model and continues training on your
   exported swipes, mixed with public data so it doesn't forget general English.
@@ -184,6 +187,11 @@ A small Python project in a new folder `swipe-training/` in this repo.
 | 7 Phone check | you | a few minutes |
 
 Stages 0 and 1 ship first, so recording starts while I build the training kit.
+
+**The overnight training (Stage 4) doesn't wait for your swipes.** It uses only FUTO's public
+data, so you run it as soon as the kit is ready. Your recorded swipes are only needed for the
+much shorter personal fine-tune (Stage 5) once 1–2 weeks have been collected; the model from
+Stage 4 can already be imported and used before then (Stage 6).
 
 ## Risks
 
