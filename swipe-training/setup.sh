@@ -2,6 +2,7 @@
 # One-time setup on your Linux PC (NVIDIA GPU). Safe to run again.
 #
 #   cd swipe-training && ./setup.sh
+#   PYTHON=/path/to/python3.13 ./setup.sh     # use a specific Python (needs 3.10-3.13)
 #
 # Creates .venv/ with PyTorch (CUDA) + ExecuTorch 1.2 (the version in the keyboard's swipe
 # engine), and builds FUTO's swipe engine in swipe-library/ for the benchmark (evaluate.py).
@@ -9,18 +10,32 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+PY="${PYTHON:-python3}"
+if command -v pacman >/dev/null; then
+  PKG_HINT="sudo pacman -S --needed base-devel git cmake python"
+else
+  PKG_HINT="sudo apt install python3-venv python3-dev git cmake build-essential"
+fi
+
 echo "== Checking the system"
 command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader \
   || echo "WARNING: nvidia-smi not found - training will run on the CPU (very slow)."
-for tool in python3 git cmake g++ make; do
-  command -v "$tool" >/dev/null || { echo "Missing '$tool'. On Ubuntu: sudo apt install python3-venv python3-dev git cmake build-essential"; exit 1; }
+for tool in "$PY" git cmake g++ make; do
+  command -v "$tool" >/dev/null || { echo "Missing '$tool'. Install with: $PKG_HINT"; exit 1; }
 done
-python3 -c 'import sys; assert (3,10) <= sys.version_info[:2] <= (3,13), "Python 3.10-3.13 needed"' \
-  || { echo "Python 3.10-3.13 is needed (ExecuTorch 1.2 has no wheels for other versions)."; exit 1; }
-python3 -c 'import ensurepip' 2>/dev/null || { echo "Run: sudo apt install python3-venv"; exit 1; }
+"$PY" -c 'import sys; assert (3,10) <= sys.version_info[:2] <= (3,13)' 2>/dev/null || {
+  echo "$("$PY" --version) can't be used: ExecuTorch 1.2 only has packages for Python 3.10-3.13."
+  echo "Get Python 3.13 alongside the system one, e.g. with uv:"
+  echo "  sudo pacman -S uv   (or: curl -LsSf https://astral.sh/uv/install.sh | sh)"
+  echo "  uv python install 3.13"
+  echo "  PYTHON=\$(uv python find 3.13) ./setup.sh"
+  exit 1
+}
+"$PY" -c 'import ensurepip' 2>/dev/null || { echo "Python's venv module is missing. Install with: $PKG_HINT"; exit 1; }
+echo "Using $("$PY" --version) at $(command -v "$PY")"
 
 echo "== Python environment (.venv)"
-[ -d .venv ] || python3 -m venv .venv
+[ -d .venv ] || "$PY" -m venv .venv
 .venv/bin/pip install -q --upgrade pip
 # PyTorch 2.11 with CUDA 12.6 (supports the GTX 16xx series), then ExecuTorch 1.2 for export
 .venv/bin/pip install -q "torch==2.11.0" --index-url https://download.pytorch.org/whl/cu126
@@ -40,7 +55,9 @@ if [ "${1:-}" != "--no-engine" ]; then
   if [ ! -d swipe-library ]; then
     git clone --recursive https://gitlab.futo.org/keyboard/swipe-library.git
   fi
-  (cd swipe-library && git submodule update --init --recursive && make host -j"$(nproc)")
+  # FUTO's Makefile calls 'python3': make it the same Python as above
+  SHIM="$(pwd)/.python-shim"; mkdir -p "$SHIM"; ln -sf "$(command -v "$PY")" "$SHIM/python3"
+  (cd swipe-library && git submodule update --init --recursive && PATH="$SHIM:$PATH" make host -j"$(nproc)")
   test -x swipe-library/build/infer_jsonl && echo "Engine built: swipe-library/build/infer_jsonl"
 fi
 

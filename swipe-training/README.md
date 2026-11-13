@@ -11,7 +11,10 @@ FUTO's swipe models (for the comparison) and the English dictionary the keyboard
 
 - Linux with a working NVIDIA driver (`nvidia-smi` shows your GTX 1660 Super)
 - Python 3.10–3.13, git, cmake, a C++ compiler:
-  `sudo apt install python3-venv python3-dev git cmake build-essential`
+  - Ubuntu/Debian: `sudo apt install python3-venv python3-dev git cmake build-essential`
+  - Arch: `sudo pacman -S --needed base-devel git cmake uv`. Arch's own Python is usually too
+    new for ExecuTorch 1.2, so get 3.13 next to it with `uv python install 3.13`, then run setup as
+    `PYTHON=$(uv python find 3.13) ./setup.sh`
 - About 20 GB free disk space
 
 ## 1. Setup (once, 10–40 minutes)

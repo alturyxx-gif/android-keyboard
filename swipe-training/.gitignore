@@ -6,3 +6,4 @@ cache/
 swipe-library/
 __pycache__/
 *.jsonl.gz
+.python-shim/
