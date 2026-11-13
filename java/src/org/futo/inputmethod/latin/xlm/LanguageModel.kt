@@ -43,6 +43,8 @@ class LanguageModel(
     val forceNoAdapter: Boolean = false,
     /** Used by the training worker: evaluate the adapter at this strength multiplier. */
     val adapterScaleMultiplier: Float? = null,
+    /** Inference threads (null = the "Typing model threads" setting). */
+    val threadsOverride: Int? = null,
 ) {
     private suspend fun loadModel() = withContext(LanguageModelScope) {
         withContext(Dispatchers.Main) { JniUtils.loadNativeLibrary() }
@@ -57,7 +59,7 @@ class LanguageModel(
                 (adapterScaleMultiplier ?: adapter?.let { PersonalAdapterFiles.scaleMultiplier(it) } ?: 1f)
         val useAdapter = !forceNoAdapter && adapter != null && adapter.isFile && strength > 0.0f
                 && (adapterOverride != null || applicationContext.getSetting(org.futo.inputmethod.latin.uix.USE_TRANSFORMER_FINETUNING))
-        val threads = applicationContext.getSetting(TypingModelThreads)
+        val threads = threadsOverride ?: applicationContext.getSetting(TypingModelThreads)
 
         mNativeState = openNative(
             modelPath,
@@ -407,6 +409,12 @@ class LanguageModel(
     suspend fun nextLetterProbs(sentence: String, typedPrefix: String): FloatArray? = withContext(LanguageModelScope) {
         loadModelIfNeeded()
         nextLetterProbsLocked(sentence, typedPrefix)
+    }
+
+    /** Loads the model (on [LanguageModelScope]) if it isn't loaded yet; true when ready. */
+    suspend fun ensureLoaded(): Boolean = withContext(LanguageModelScope) {
+        loadModelIfNeeded()
+        mNativeState != 0L
     }
 
     suspend fun closeInternalLocked() = withContext(LanguageModelScope) {

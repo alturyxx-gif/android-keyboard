@@ -140,19 +140,86 @@ object TapPredictor {
         val sentence = words.joinToString(" ")
         val valid = dictValid?.mapNotNull { cp -> Character.toLowerCase(cp).toChar().takeIf { it in 'a'..'z' } }?.toSet()
         val urdu = RomanUrdu.isMostlyRomanUrdu("$sentence $prefix")
-        scope.launch {
-            try {
-                val lm = if (urdu) null else modelProvider?.invoke()?.nextLetterProbsLocked(sentence, prefix)
-                val personal = personalCompletions(prefix, urdu)
-                val probs = LetterMix.combine(lm, valid, personal, prefix)
-                if (generation == gen) {
-                    snapshot = Snapshot(gen, prefix, probs)
+        // Only the newest request matters: if the predictor is busy, this replaces any request
+        // still waiting, so fast typing never builds up a queue
+        pendingRequest = Request(gen, sentence, prefix, valid, urdu)
+        if (!running) {
+            running = true
+            predictorThread.execute { drain() }
+        }
+    }
+
+    private data class Request(val gen: Int, val sentence: String, val prefix: String, val valid: Set<Char>?, val urdu: Boolean)
+    @Volatile private var pendingRequest: Request? = null
+    @Volatile private var running = false
+
+    /**
+     * The predictor's own copy of the typing model, on its own thread with 1 CPU thread, so it
+     * never queues in front of the keyboard's suggestions (which the keyboard waits for when
+     * you press space) and never competes for many cores.
+     */
+    private val predictorThread = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "TapPredictor").apply { priority = Thread.NORM_PRIORITY - 1; isDaemon = true }
+    }
+    private var ownModel: LanguageModel? = null
+    @Volatile private var ownModelLoading = false
+
+    private fun drain() {
+        try {
+            while (true) {
+                val req = pendingRequest ?: break
+                pendingRequest = null
+                if (req.gen != generation) continue // already outdated
+                val lm = if (req.urdu) null else ownModelOrStartLoading()?.nextLetterProbsLocked(req.sentence, req.prefix)
+                val probs = LetterMix.combine(lm, req.valid, personalCompletions(req.prefix, req.urdu), req.prefix)
+                if (generation == req.gen) {
+                    snapshot = Snapshot(req.gen, req.prefix, probs)
                     overlayVersion++
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Next-letter prediction failed", e)
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Next-letter prediction failed", e)
+        } finally {
+            running = false
+            // A request may have arrived just as we finished
+            if (pendingRequest != null && !running) { running = true; predictorThread.execute { drain() } }
+        }
+    }
+
+    /**
+     * Returns the predictor's model if it's ready for the same model file and language as the
+     * keyboard's; otherwise starts loading it in the background and returns null (that tap uses
+     * dictionary + personal words only).
+     */
+    private fun ownModelOrStartLoading(): LanguageModel? {
+        val main = modelProvider?.invoke() ?: return null
+        val own = ownModel
+        if (own != null && own.modelInfoLoader.path == main.modelInfoLoader.path && own.locale == main.locale) {
+            return if (own.mNativeState != 0L) own else null
+        }
+        if (ownModelLoading) return null
+        ownModelLoading = true
+        val ctx = main.applicationContext
+        if (own != null) releaseModel()
+        scope.launch {
+            try {
+                val m = LanguageModel(ctx, null, main.modelInfoLoader, main.locale, threadsOverride = 1)
+                if (m.ensureLoaded()) ownModel = m
+            } catch (e: Throwable) {
+                Log.w(TAG, "Could not load the predictor's typing model", e)
+            } finally {
+                ownModelLoading = false
             }
         }
+        return null
+    }
+
+    /** Free the predictor's model copy (e.g. when the typing model is reloaded). */
+    fun releaseModel() {
+        val m = ownModel ?: return
+        ownModel = null
+        // Closed on the predictor's own thread, so never while a prediction is using it
+        predictorThread.execute { kotlinx.coroutines.runBlocking { m.closeInternalLocked() } }
     }
 
     /** Synchronous version for replay testing (runs on the typing model's thread). */

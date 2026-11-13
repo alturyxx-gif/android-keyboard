@@ -19,7 +19,8 @@ static std::string top(const std::vector<float> &p, int n) {
 
 int main(int argc, char **argv) {
     auto *state = new LanguageModelState();
-    if(!state->Initialize(argv[1], "", 0.0f, 4)) { printf("load failed\n"); return 1; }
+    int threads = argc > 2 ? atoi(argv[2]) : 4;
+    if(!state->Initialize(argv[1], "", 0.0f, threads)) { printf("load failed\n"); return 1; }
     struct Case { const char *ctx; const char *prefix; char expect; };
     Case cases[] = {
         {"I'm going to the", "sto", 'r'},
@@ -54,7 +55,7 @@ int main(int argc, char **argv) {
         word += *q;
     }
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    printf("== %d calls, %.1f ms per tap on this CPU (4 threads)\n", calls, ms / calls);
+    printf("== %d calls, %.1f ms per tap on this CPU (%d threads)\n", calls, ms / calls, threads);
     if(ok < 7) failures++;
     printf("%s\n", failures ? "SOME FAILED" : "ALL PASSED");
     return failures ? 1 : 0;
