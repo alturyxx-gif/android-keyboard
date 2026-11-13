@@ -383,6 +383,15 @@ public final class MainKeyboardView extends KeyboardView implements DrawingProxy
         return Constants.isValidCoordinate(y) ? mKeyDetector.getTouchY(y) : y;
     }
 
+    @Override
+    protected void onDraw(final android.graphics.Canvas canvas) {
+        super.onDraw(canvas);
+        // Tap plan: debug view of the invisible key areas (only when turned on)
+        org.futo.inputmethod.latin.tap.TapOverlay.attach(this);
+        org.futo.inputmethod.latin.tap.TapOverlay.draw(canvas, getContext(), getKeyboard(),
+                -mKeyDetector.getTouchX(0), -mKeyDetector.getTouchY(0));
+    }
+
     /**
      * Attaches a keyboard to this view. The keyboard can be switched at any time and the
      * view will re-layout itself to accommodate the keyboard.

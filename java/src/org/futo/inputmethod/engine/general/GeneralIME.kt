@@ -132,6 +132,18 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         suggestedWordsCallback = this
     )
 
+    init {
+        // Tap plan: context-aware key detection gets the typing model and settings
+        org.futo.inputmethod.latin.tap.TapPredictor.modelProvider = { languageModelFacilitator.getLanguageModelForGrammar() }
+        org.futo.inputmethod.latin.tap.TapPredictor.dictionaryProvider = { prefix ->
+            try {
+                dictionaryFacilitator.getValidNextCodePoints(org.futo.inputmethod.latin.common.ComposedData(
+                    org.futo.inputmethod.latin.common.InputPointers(48), false, prefix)).toSet()
+            } catch (e: Exception) { null }
+        }
+        org.futo.inputmethod.latin.tap.TapKeyResolver.attach(context)
+    }
+
     private val liveGrammar = LiveGrammarController(
         context = context,
         inputLogic = inputLogic,
@@ -284,6 +296,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         dictionaryFacilitator.onStartInput()
         languageModelFacilitator.onStartInput()
         liveGrammar.onStartInput()
+        org.futo.inputmethod.latin.tap.TapPredictor.refreshSettings(context)
         inputLogic.startInput(
             RichInputMethodManager.getInstance().combiningRulesExtraValueOfCurrentSubtype,
             settings.current
@@ -319,6 +332,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
     override fun onFinishInput() {
         liveGrammar.onFinishInput()
         org.futo.inputmethod.latin.swipe.SwipeRecording.onFinishInput(context)
+        org.futo.inputmethod.latin.tap.TapRecording.onFinishInput(context)
         inputLogic.finishInput()
         dictionaryFacilitator.onFinishInput(context)
         updateSuggestionJob?.cancel()

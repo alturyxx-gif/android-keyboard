@@ -392,6 +392,23 @@ class LanguageModel(
         return@withContext out
     }
 
+    /**
+     * Tap plan, Stage 3: probabilities of the next typed letter a..z, given the sentence before
+     * the word and the letters typed so far. Must be called on [LanguageModelScope]. Returns
+     * null if the model isn't loaded (it is not loaded here: key detection must never wait).
+     */
+    fun nextLetterProbsLocked(sentence: String, typedPrefix: String): FloatArray? {
+        if (mNativeState == 0L) return null
+        val out = FloatArray(26)
+        return if (nextLetterProbsNative(mNativeState, sentence, typedPrefix, out)) out else null
+    }
+
+    /** Same, loading the model first if needed (for replay testing). */
+    suspend fun nextLetterProbs(sentence: String, typedPrefix: String): FloatArray? = withContext(LanguageModelScope) {
+        loadModelIfNeeded()
+        nextLetterProbsLocked(sentence, typedPrefix)
+    }
+
     suspend fun closeInternalLocked() = withContext(LanguageModelScope) {
         if (mNativeState != 0L) {
             closeNative(mNativeState)
@@ -415,6 +432,8 @@ class LanguageModel(
         outStrings: Array<String?>,
         outProbs: FloatArray
     )
+
+    private external fun nextLetterProbsNative(state: Long, context: String, typedPrefix: String, outProbs: FloatArray): Boolean
 
     private external fun scoreContinuationsNative(
         state: Long,

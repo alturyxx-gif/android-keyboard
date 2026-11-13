@@ -118,6 +118,14 @@ val PredictiveTextMenu = UserSettingsMenu(
             default = {true}
         ),
 
+        // Custom build: context-aware key detection (TAP_PLAN.md)
+        userSettingNavigationItem(
+            title = R.string.tap_accuracy_title,
+            subtitle = R.string.tap_accuracy_subtitle,
+            style = NavigationItemStyle.Misc,
+            navigateTo = "tapAccuracy",
+        ),
+
         userSettingToggleSharedPrefs(
             title = R.string.prefs_show_suggestions,
             subtitle = R.string.prefs_show_suggestions_summary,

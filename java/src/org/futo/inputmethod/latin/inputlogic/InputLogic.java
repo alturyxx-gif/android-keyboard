@@ -715,7 +715,8 @@ public final class InputLogic {
 
         updateBoostedCodePoints(
                 settingsValues,
-                settingsValues.isWordCodePoint(processedEvent.mCodePoint)
+                settingsValues.isWordCodePoint(processedEvent.mCodePoint),
+                processedEvent.mKeyCode == Constants.CODE_DELETE
         );
 
         updateUiInputState();
@@ -730,7 +731,8 @@ public final class InputLogic {
      */
     private void updateBoostedCodePoints(
             final SettingsValues settingsValues,
-            final boolean wasWordCodePoint
+            final boolean wasWordCodePoint,
+            final boolean wasBackspace
     ) {
         Set<Integer> boostedCodePoints = null;
         // Require key boosting setting to be enabled
@@ -746,6 +748,25 @@ public final class InputLogic {
         }
 
         mImeHelper.updateBoostedCodePoints(boostedCodePoints);
+
+        // Tap plan: work out next-letter likelihoods for the next tap in the background
+        if (org.futo.inputmethod.latin.tap.TapPredictor.INSTANCE.getEnabled()) {
+            final boolean composing = mWordComposer.isComposingWord() && !mWordComposer.isBatchMode();
+            final String prefix = composing ? mWordComposer.getTypedWord() : "";
+            final boolean atWordStart = !composing && !wasBackspace;
+            String prevWords = null;
+            if (composing || atWordStart) {
+                final NgramContext ctx = mConnection.getNgramContextFromNthPreviousWord(
+                        settingsValues.mSpacingAndPunctuations, composing ? 2 : 1);
+                prevWords = ctx.extractPrevWordsContext();
+            }
+            org.futo.inputmethod.latin.tap.TapPredictor.onInput(mImeHelper.getContext(), prefix, prevWords,
+                    boostedCodePoints, wasBackspace, isPrivateField(settingsValues),
+                    settingsValues.mUseDictionaryKeyBoosting
+                            && settingsValues.mAutoCorrectionEnabledPerTextFieldSettings
+                            && !AccessibilityUtils.getInstance().isAccessibilityEnabled()
+                            && (composing || atWordStart));
+        }
     }
 
     public void onStartBatchInput(final SettingsValues settingsValues,
@@ -1172,6 +1193,9 @@ public final class InputLogic {
         }
         if (isComposingWord) {
             mWordComposer.applyProcessedEvent(event);
+            // Tap plan: statistics, mid-word fixes and (opt-in) tap recording
+            org.futo.inputmethod.latin.tap.TapRecording.onLetter(mImeHelper.getContext(), codePoint,
+                    event.mX, event.mY, mWordComposer.size() - 1, null, isPrivateField(settingsValues));
             // If it's the first letter, make note of auto-caps state
             if (mWordComposer.isSingleLetter()) {
                 mWordComposer.setCapitalizedModeAtStartComposingTime(inputTransaction.mShiftState);
@@ -1418,6 +1442,11 @@ public final class InputLogic {
      * @param event The event to handle.
      * @param inputTransaction The transaction in progress.
      */
+    /** Password / incognito / no-learning fields: never record taps there. */
+    private static boolean isPrivateField(final SettingsValues settingsValues) {
+        return settingsValues.mInputAttributes.mNoLearning || settingsValues.mInputAttributes.mIsPasswordField;
+    }
+
     private void handleBackspaceEvent(final Event event, final InputTransaction inputTransaction,
             final int currentKeyboardScriptId) {
         mSpaceState = SpaceState.NONE;
@@ -1446,6 +1475,19 @@ public final class InputLogic {
 
         final boolean deleteWholeWords = event.isKeyRepeat()
                 && inputTransaction.mSettingsValues.mBackspaceModeHold == Settings.BACKSPACE_MODE_WORDS;
+
+        final boolean tapWasComposing = mWordComposer.isComposingWord() && !mConnection.hasSelection();
+        if (tapWasComposing && !mWordComposer.isBatchMode() && !deleteWholeWords && mWordComposer.size() > 0) {
+            final String typedSoFar = mWordComposer.getTypedWord();
+            final int lastIndex = mWordComposer.size() - 1;
+            final int deleted = typedSoFar.isEmpty() ? 0 : typedSoFar.codePointBefore(typedSoFar.length());
+            final org.futo.inputmethod.latin.common.InputPointers ptrs = mWordComposer.getInputPointers();
+            final boolean hasPtr = lastIndex < ptrs.getPointerSize();
+            org.futo.inputmethod.latin.tap.TapRecording.onBackspace(mImeHelper.getContext(), true, deleted,
+                    hasPtr ? ptrs.getXCoordinates()[lastIndex] : -1, hasPtr ? ptrs.getYCoordinates()[lastIndex] : -1, lastIndex);
+        } else {
+            org.futo.inputmethod.latin.tap.TapRecording.onBackspace(mImeHelper.getContext(), false, 0, -1, -1, -1);
+        }
 
         if (mWordComposer.isComposingWord() && !mConnection.hasSelection()) {
             if (mWordComposer.isBatchMode()) {
@@ -2199,6 +2241,7 @@ public final class InputLogic {
      */
     private void revertCommit(final InputTransaction inputTransaction,
             final SettingsValues settingsValues) {
+        org.futo.inputmethod.latin.tap.TapRecording.onRevert(mImeHelper.getContext());
         final CharSequence originallyTypedWord = mLastComposedWord.mTypedWord;
         final String originallyTypedWordString =
                 originallyTypedWord != null ? originallyTypedWord.toString() : "";
@@ -2816,8 +2859,18 @@ public final class InputLogic {
         // what user typed. Note: currently this is done much later in
         // LastComposedWord#didCommitTypedWord by string equality of the remembered
         // strings.
+        // Tap plan: capture the tapped letters before the composer is reset
+        final String tapTyped = mWordComposer.getTypedWord();
+        final boolean tapBatch = mWordComposer.isBatchMode();
+        final org.futo.inputmethod.latin.common.InputPointers tapPtrs = mWordComposer.getInputPointers();
+        final int tapN = Math.min(tapPtrs.getPointerSize(), tapTyped.length());
+        final int[] tapX = java.util.Arrays.copyOf(tapPtrs.getXCoordinates(), tapN);
+        final int[] tapY = java.util.Arrays.copyOf(tapPtrs.getYCoordinates(), tapN);
         mLastComposedWord = mWordComposer.commitWord(commitType,
                 chosenWordWithSuggestions, separatorString, ngramContext);
+        org.futo.inputmethod.latin.tap.TapRecording.onCommit(mImeHelper.getContext(), tapTyped,
+                chosenWord.toString(), commitType == LastComposedWord.COMMIT_TYPE_MANUAL_PICK, tapBatch,
+                tapX, tapY, ngramContext.extractPrevWordsContext(), isPrivateField(settingsValues));
         if (DebugFlags.DEBUG_ENABLED) {
             long runTimeMillis = System.currentTimeMillis() - startTimeMillis;
             Log.d(TAG, "commitChosenWord() : " + runTimeMillis + " ms to run "

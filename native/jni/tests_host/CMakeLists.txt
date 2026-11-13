@@ -42,3 +42,8 @@ add_executable(exp_train exp_train.cpp score_helper.cpp host_stubs.cpp ${JNI_ROO
 target_include_directories(exp_train PRIVATE ${HOST_INCLUDES})
 target_compile_options(exp_train PRIVATE -w -include cstring)
 target_link_libraries(exp_train jni_latinime_common_static pthread)
+
+add_executable(test_nextletter test_nextletter.cpp host_stubs.cpp ${JNI_ROOT}/src/jni_utils.cpp)
+target_include_directories(test_nextletter PRIVATE ${HOST_INCLUDES})
+target_compile_options(test_nextletter PRIVATE -w -include cstring)
+target_link_libraries(test_nextletter jni_latinime_common_static pthread)

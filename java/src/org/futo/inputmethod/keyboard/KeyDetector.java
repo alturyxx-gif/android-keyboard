@@ -150,7 +150,9 @@ public class KeyDetector {
                 primaryKey = key;
             }
         }
-        return primaryKey;
+        // Tap plan: context-aware key detection (falls back to the key above when it has no
+        // information for this tap)
+        return org.futo.inputmethod.latin.tap.TapKeyResolver.resolve(mKeyboard, touchX, touchY, primaryKey);
     }
 
     public void updateBoostedCodePoints(@Nullable Set<Integer> validNextCodePoints) {

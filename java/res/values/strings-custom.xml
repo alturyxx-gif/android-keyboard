@@ -18,4 +18,7 @@
     <string name="voice_use_gpu_subtitle">Experimental. Runs the speech model on the phone\'s GPU (OpenCL). The first use can freeze for a few seconds while it prepares. If it fails or crashes it switches back to the CPU automatically.</string>
     <string name="voice_power_test_title">Measure voice power use (CPU vs GPU)</string>
     <string name="voice_power_test_subtitle">Uses the phone\'s battery readings to compare how much energy each engine uses per transcription</string>
+    <!-- Tap accuracy (TAP_PLAN.md) -->
+    <string name="tap_accuracy_title">Tap accuracy</string>
+    <string name="tap_accuracy_subtitle">Context-aware key detection, your touch model, statistics and tuning</string>
 </resources>

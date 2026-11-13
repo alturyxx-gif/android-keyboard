@@ -951,6 +951,78 @@ static std::vector<float> ScoreContinuations(LanguageModelState *state, const st
     return out;
 }
 
+// Tap plan, Stage 3: probabilities of the next *typed* letter (a..z), given the sentence
+// before the word and the letters typed so far. Uses the model's typed-letter tokens
+// (<XBU><CHAR_x>...), the same format it was trained on for typos. Returns 26 values summing
+// to 1, or an empty vector if the model has no letter tokens. Shares the KV cache like
+// ScoreContinuations (only new tokens are decoded).
+static std::vector<float> NextLetterProbs(LanguageModelState *state, const std::string &context, const std::string &typedPrefix) {
+    std::vector<float> out;
+    if(state->specialTokens.XBU <= 0) return out;
+    LanguageModel *model = state->model.get();
+    llama_context *ctx = model->context();
+    llama_batch batch = model->adapter->batch;
+    const int n_batch = model->adapter->n_batch;
+
+    token_sequence full;
+    full.push_back(1); // BOS
+    if(!trim(context).empty()) {
+        auto c = model->tokenize(trim(context) + " ");
+        full.insert(full.end(), c.begin(), c.end());
+    }
+    full.push_back(state->specialTokens.XBU);
+    for(char ch : typedPrefix) {
+        char l = (char)tolower((unsigned char)ch);
+        if(l < 'a' || l > 'z') continue;
+        full.push_back(state->specialTokens.LETTERS_TO_IDS[l - 'a']);
+    }
+    if((int)full.size() >= LLAMA_CONTEXT_SIZE) {
+        // Keep the end: drop the oldest context tokens after BOS
+        full.erase(full.begin() + 1, full.begin() + 1 + ((int)full.size() - LLAMA_CONTEXT_SIZE + 8));
+    }
+
+    const auto &active = model->transformerContext.active_context;
+    int npast = 0;
+    while(npast < (int)std::min(active.size(), full.size()) && active[npast] == full[npast]) npast++;
+    npast = std::min(npast, (int)full.size() - 1); // always re-decode the last token for its logits
+
+    llama_kv_cache_seq_rm(ctx, 0, (llama_pos)npast, -1);
+    int pos = npast;
+    while(pos < (int)full.size()) {
+        int n = std::min(n_batch, (int)full.size() - pos);
+        batch.n_tokens = n;
+        for(int i = 0; i < n; i++) {
+            batch.token[i] = full[pos + i];
+            batch.pos[i] = (llama_pos)(pos + i);
+            batch.seq_id[i][0] = 0;
+            batch.n_seq_id[i] = 1;
+            batch.logits[i] = (int8_t)(pos + i == (int)full.size() - 1);
+        }
+        if(llama_decode(ctx, batch) != 0) {
+            AKLOGE("NextLetterProbs: llama_decode failed");
+            llama_kv_cache_seq_rm(ctx, -1, -1, -1);
+            model->transformerContext.active_context = { };
+            state->past_mixes.clear();
+            return out;
+        }
+        pos += n;
+    }
+    model->transformerContext.active_context = full;
+    state->past_mixes.clear();
+
+    const float *logits = llama_get_logits_ith(ctx, batch.n_tokens - 1);
+    float maxv = -INFINITY;
+    for(int i = 0; i < 26; i++) maxv = std::max(maxv, logits[state->specialTokens.LETTERS_TO_IDS[i]]);
+    double sum = 0;
+    out.resize(26);
+    for(int i = 0; i < 26; i++) {
+        out[i] = std::exp(logits[state->specialTokens.LETTERS_TO_IDS[i]] - maxv);
+        sum += out[i];
+    }
+    for(auto &v : out) v = (float)(v / sum);
+    return out;
+}
+
 struct SuggestionItemToRescore {
     int index;
 
@@ -1101,6 +1173,18 @@ namespace latinime {
             jfloat v = scores[i];
             env->SetFloatArrayRegion(outScores, i, 1, &v);
         }
+    }
+
+    // (JLjava/lang/String;Ljava/lang/String;[F)Z
+    static jboolean xlm_LanguageModel_nextLetterProbs(JNIEnv *env, jclass clazz, jlong dict,
+                                                      jstring context, jstring typedPrefix, jfloatArray outProbs) {
+        GGML_UNUSED(clazz);
+        auto *state = reinterpret_cast<LanguageModelState *>(dict);
+        if(state == nullptr) return JNI_FALSE;
+        auto probs = NextLetterProbs(state, jstring2string(env, context), jstring2string(env, typedPrefix));
+        if(probs.size() != 26 || env->GetArrayLength(outProbs) < 26) return JNI_FALSE;
+        env->SetFloatArrayRegion(outProbs, 0, 26, probs.data());
+        return JNI_TRUE;
     }
 
     static void xlm_LanguageModel_getSuggestions(JNIEnv *env, jclass clazz,
@@ -1402,6 +1486,11 @@ namespace latinime {
                     const_cast<char *>("rescoreSuggestionsNative"),
                     const_cast<char *>("(JLjava/lang/String;[Ljava/lang/String;[I[I)V"),
                     reinterpret_cast<void *>(xlm_LanguageModel_rescoreSuggestions)
+            },
+            {
+                    const_cast<char *>("nextLetterProbsNative"),
+                    const_cast<char *>("(JLjava/lang/String;Ljava/lang/String;[F)Z"),
+                    reinterpret_cast<void *>(xlm_LanguageModel_nextLetterProbs)
             },
             {
                     const_cast<char *>("scoreContinuationsNative"),
