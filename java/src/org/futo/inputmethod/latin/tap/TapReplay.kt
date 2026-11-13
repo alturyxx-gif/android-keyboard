@@ -59,7 +59,8 @@ object TapReplay {
             if (valid != null) dictAvailable = true
             val key = c.sentence + "|" + c.prefix
             val p = if (c.sentence.isEmpty() && c.prefix.isEmpty()) null else cache.getOrPut(key) {
-                TapPredictor.computeForReplay(c.sentence, c.prefix, valid)
+                val r = TapPredictor.computeForReplay(c.sentence, c.prefix, valid)
+                if (c.prefix.isEmpty()) LetterMix.flatten(r, LetterMix.WORD_START_EXPONENT) else r
             }
             probs.add(p)
             valids.add(valid)

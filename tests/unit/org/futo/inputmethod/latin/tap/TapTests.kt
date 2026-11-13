@@ -123,6 +123,14 @@ class LetterMixTest {
         assertTrue(p['n' - 'a'] > 0.2f)
     }
 
+    @Test fun flattenMakesFirstLetterGuessesWeaker() {
+        val p = FloatArray(26) { 0.02f }; p['s' - 'a'] = 0.5f
+        val f = LetterMix.flatten(p, LetterMix.WORD_START_EXPONENT)!!
+        assertTrue(f['s' - 'a'] < 0.2f)
+        assertTrue(f['s' - 'a'] > f['a' - 'a'])
+        assertEquals(1f, f.sum(), 1e-4f)
+    }
+
     @Test fun nothingKnownGivesNull() = assertNull(LetterMix.combine(null, null, emptyList(), ""))
 
     @Test fun dictionaryOnlyIsUniformOverValid() {
