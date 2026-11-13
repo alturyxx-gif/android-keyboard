@@ -148,6 +148,9 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         blockOffensive: Boolean,
         importance: Int
     ) {
+        // Swipe plan, Stage 1: label the last swipe with the word that was actually kept
+        org.futo.inputmethod.latin.swipe.SwipeRecording.onCommitted(context, word)
+
         val isWordBlacklisted = SuggestionBlacklist.getCapitalVariants(word, settings.current.mLocale).any { !suggestionBlacklist.isWordOk(it) }
         if(isWordBlacklisted) return
 
@@ -179,6 +182,11 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         timestamp: Long,
         eventType: Int
     ) {
+        if(eventType == Constants.EVENT_REJECTION) {
+            // The swiped word was deleted with backspace
+            org.futo.inputmethod.latin.swipe.SwipeRecording.onRejected(context)
+        }
+
         dictionaryFacilitator.unlearnFromUserHistory(
             word, ngramContext, timestamp, eventType
         )
@@ -310,6 +318,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
 
     override fun onFinishInput() {
         liveGrammar.onFinishInput()
+        org.futo.inputmethod.latin.swipe.SwipeRecording.onFinishInput(context)
         inputLogic.finishInput()
         dictionaryFacilitator.onFinishInput(context)
         updateSuggestionJob?.cancel()

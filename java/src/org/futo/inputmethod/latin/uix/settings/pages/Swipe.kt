@@ -274,6 +274,17 @@ val SwipeMenu = UserSettingsMenu(
             )
         },
 
+        // Custom build: swipe engine status, swipe recording and custom swipe models
+        userSettingDecorationOnly {
+            val nav = LocalNavController.current
+            NavigationItem(
+                "Swipe model & training",
+                subtitle = "Engine status, record your swipes, custom models",
+                style = NavigationItemStyle.Misc,
+                navigate = { nav?.navigate("swipeTraining") }
+            )
+        },
+
         userSettingDecorationOnly {
             ScreenTitle(stringResource(R.string.swipe_settings_miscellaneous_title))
         },

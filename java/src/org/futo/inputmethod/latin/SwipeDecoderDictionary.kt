@@ -19,6 +19,14 @@ import org.futo.inputmethod.latin.settings.SettingsValuesForSuggestion
 import org.futo.inputmethod.latin.uix.SettingsKey
 import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.ml.inference.SwipeDecoder
+import org.futo.inputmethod.latin.swipe.SwipeCapture
+import org.futo.inputmethod.latin.swipe.SwipeDiagnostics
+import org.futo.inputmethod.latin.swipe.SwipeKeys
+import org.futo.inputmethod.latin.swipe.SwipeModelFrame
+import org.futo.inputmethod.latin.swipe.SwipePath
+import org.futo.inputmethod.latin.swipe.SwipeRecording
+import org.futo.inputmethod.latin.swipe.SwipeRecordingEnabled
+import org.futo.inputmethod.latin.swipe.SwipeLayoutMatch
 import java.io.File
 import java.util.Locale
 import kotlin.math.abs
@@ -81,7 +89,7 @@ data class LayoutInfoForModel(
         fun buildLayoutInfo(context: Context, keyboard: Keyboard, settingsValues: SettingsValues): LayoutInfoForModel? =
             (context.getSetting(SwipeSpecialDecoderSetting).let {
                 if(it) SpecialDecoder.matchLayout(keyboard, settingsValues)
-                else null
+                else { SwipeDiagnostics.refinerMatch.value = "Off: turned off in developer settings"; null }
             } ?: run {
                 val keys = keyboard.sortedKeys
                     .filter { settingsValues.isWordCodePoint(it.swipeCode) && !Character.isDigit(it.swipeCode) }
@@ -168,7 +176,11 @@ private class SpecialDecoder private constructor(
         )
 
         internal fun matchLayout(keyboard: Keyboard, settingsValues: SettingsValues): LayoutInfoForModel? {
-            if(settingsValues.mMultilingualLocales.isNotEmpty()) return null
+            if(settingsValues.mMultilingualLocales.isNotEmpty()) {
+                SwipeDiagnostics.refinerMatch.value = "Off: several languages are enabled at once"
+                return null
+            }
+            SwipeDiagnostics.refinerMatch.value = "Off: no refiner for ${keyboard.mId.mLocale.language}"
 
             val keys = keyboard.sortedKeys.associate { Character.toLowerCase(it.swipeCode) to it }
 
@@ -179,38 +191,36 @@ private class SpecialDecoder private constructor(
                 // about using a special decoder, since this should never occur in a regular layout.
                 if(decoder.layoutLetters.any { letter -> keyboard.sortedKeys.count { key ->
                         Character.toLowerCase(key.swipeCode) == letter.code
-                } > 1}) return@firstNotNullOfOrNull null
+                } > 1}) {
+                    SwipeDiagnostics.refinerMatch.value = "Off: the layout has repeated letter keys"
+                    return@firstNotNullOfOrNull null
+                }
 
                 // Make sure the letters are a perfect match!
                 val expectedLayoutLetters = decoder.layoutLetters.map { it.code }.toSortedSet()
                 val ourLayoutLetters = keys.keys.filter { !Character.isDigit(it) && settingsValues.isWordCodePoint(it) }.toSortedSet()
-                if(expectedLayoutLetters != ourLayoutLetters) return@firstNotNullOfOrNull null
+                if(expectedLayoutLetters != ourLayoutLetters) {
+                    SwipeDiagnostics.refinerMatch.value = "Off: the layout's letters aren't a-z"
+                    return@firstNotNullOfOrNull null
+                }
 
                 val relevantKeysN = decoder.layoutLetters.map { keys[it.code] }
                 if(relevantKeysN.any { it == null }) return@firstNotNullOfOrNull null
                 val relevantKeys = relevantKeysN.filterNotNull()
                 val positionsNotNormalized = relevantKeys.map { getKeyXY(it, keyboard) }
 
-                val minX = positionsNotNormalized.minOf { it.first }
-                val minY = positionsNotNormalized.minOf { it.second }
+                val match = SwipeLayoutMatch.compare(
+                    decoder.layoutLetters, decoder.layoutXs, decoder.layoutYs,
+                    decoder.maxXDeviation.toFloat(), decoder.maxYDeviation.toFloat(),
+                    positionsNotNormalized
+                )
+                SwipeDiagnostics.refinerMatch.value = match.reason
+                if(!match.matches) return@firstNotNullOfOrNull null
 
-                val maxX = positionsNotNormalized.maxOf { it.first }
-                val maxY = positionsNotNormalized.maxOf { it.second }
-
-                val offsetX = minX
-                val offsetY = minY
-                val scaleX = maxX - offsetX
-                val scaleY = maxY - offsetY
-
-                if(scaleX == 0.0f || scaleY == 0.0f) return@firstNotNullOfOrNull null
-
-                val normX = positionsNotNormalized.map { (it.first - offsetX) / scaleX }
-                val normY = positionsNotNormalized.map { (it.second - offsetY) / scaleY }
-
-                val matches = decoder.layoutXs.zip(normX).all { (a, b) -> abs(b - a) < decoder.maxXDeviation }
-                           && decoder.layoutYs.zip(normY).all { (a, b) -> abs(b - a) < decoder.maxYDeviation }
-
-                if(!matches) return@firstNotNullOfOrNull null
+                val offsetX = match.offsetX
+                val offsetY = match.offsetY
+                val scaleX = match.scaleX
+                val scaleY = match.scaleY
 
                 val dsx = decoder.xScale / scaleX
                 val dsy = decoder.yScale / scaleY
@@ -485,6 +495,35 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         // basically update it at end of swiping
         if(useHighBeam) appliedScoring.value = decoder.scoring
 
+        if(useHighBeam && count == 1) {
+            try {
+                captureForRecording(kb, segments.first(), results.map { it.word }, wordsContext)
+            } catch(e: Exception) {
+                Log.w("SwipeDecoderDictionary", "Could not capture swipe for recording", e)
+            }
+        }
+
+        if(useHighBeam) {
+            try {
+                val t = decoder.lastTiming()
+                SwipeDiagnostics.lastSwipe.value = SwipeDiagnostics.LastSwipe(
+                    timeMillis = System.currentTimeMillis(),
+                    encoder = SWIPE_MODEL.substringBeforeLast('/').substringAfterLast('/'),
+                    refinerActive = decoder.hasDecoder(),
+                    contextModelActive = decoder.hasLm(),
+                    totalMs = t.totalUs / 1000f,
+                    encoderMs = t.encoderUs / 1000f,
+                    refinerMs = t.decoderUs / 1000f,
+                    searchMs = t.beamUs / 1000f,
+                    contextMs = t.lmUs / 1000f,
+                    beamWidth = beamWidth,
+                    candidates = results.map { it.word },
+                )
+            } catch(e: Exception) {
+                Log.w("SwipeDecoderDictionary", "Could not record swipe diagnostics", e)
+            }
+        }
+
         if(BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil) {
             Log.d("SwipeDecoderDictionary", "Beam width: ${beamWidth} (multiswipe=$isMultiSwipe useHighBeam=$useHighBeam)")
             Log.d("SwipeDecoderDictionary", "Timing: ${decoder.lastTiming()}")
@@ -530,6 +569,52 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
 
         return list
     }
+
+    /** Stage 1 of the swipe plan: hand the finished swipe to the (opt-in) recorder. */
+    private fun captureForRecording(
+        kb: Keyboard,
+        seg: InputPointers.GestureSegment,
+        candidates: List<String>,
+        wordsContext: List<String>,
+    ) {
+        if(!context.getSetting(SwipeRecordingEnabled)) return
+        val attrs = Settings.getInstance().current?.mInputAttributes ?: return
+        // Never record in password / incognito / no-learning fields
+        if(attrs.mNoLearning || attrs.mIsPasswordField) return
+
+        val w = kb.mBaseWidth.toFloat()
+        val h = (kb.mBaseHeight - kb.mPadding.bottom).toFloat()
+        if(w <= 0f || h <= 0f) return
+        val n = seg.x.length
+        val t0 = seg.t.get(0).toFloat()
+        val path = SwipePath(
+            x = (0 until n).map { round4(seg.x.get(it) / w) },
+            y = (0 until n).map { round4(seg.y.get(it) / h) },
+            t = (0 until n).map { seg.t.get(it) - t0 },
+        )
+        val letterKeys = kb.sortedKeys
+            .filter { Character.isLetter(it.swipeCode) }
+            .distinctBy { Character.toLowerCase(it.swipeCode) }
+            .sortedBy { Character.toLowerCase(it.swipeCode) }
+        val keys = SwipeKeys(
+            letters = letterKeys.joinToString("") { Character.toString(Character.toLowerCase(it.swipeCode)) },
+            x = letterKeys.map { round4((it.drawX + it.drawWidth / 2.0f) / w) },
+            y = letterKeys.map { round4((it.y + it.verticalGap / 2.0f + it.height / 2.0f) / h) },
+        )
+        val layout = appliedLayoutInfo
+        val frame = SwipeModelFrame(
+            letters = layout.letters, xs = layout.xs, ys = layout.ys,
+            sx = layout.sx, sy = layout.sy, ox = layout.ox, oy = layout.oy,
+            refiner = decoder?.hasDecoder() == true, contextModel = decoder?.hasLm() == true,
+        )
+        SwipeRecording.onSwipe(context, SwipeCapture(
+            timeMillis = System.currentTimeMillis(),
+            path = path, keys = keys, frame = frame,
+            candidates = candidates, context = wordsContext,
+        ))
+    }
+
+    private fun round4(v: Float) = (v * 10000f).roundToInt() / 10000f
 
     data class PendingLayoutInfo(val layout: LayoutInfoForModel, val tries: List<Long>)
     private var pendingLayoutInfo: PendingLayoutInfo? = null

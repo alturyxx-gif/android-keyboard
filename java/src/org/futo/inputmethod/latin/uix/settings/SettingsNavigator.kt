@@ -183,6 +183,7 @@ fun SettingsNavigator(
             composable("devkeyboard") { DevKeyboardScreen(navController) }
             composable("blacklist") { BlacklistScreen(navController) }
             composable("personalisation") { PersonalisationScreen(navController) }
+            composable("swipeTraining") { org.futo.inputmethod.latin.uix.settings.pages.SwipeTrainingScreen(navController) }
             composable("voicePowerTest") { org.futo.inputmethod.latin.uix.voicepower.VoicePowerTestScreen(navController) }
             composable("payment") { PaymentScreen(navController) { navController.navigateUp() } }
             composable("paid") { PaymentThankYouScreen { navController.navigateUp() } }
