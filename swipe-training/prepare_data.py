@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from swipekit.data import parse_dataset_line, QWERTY  # noqa: E402
 
 BASE = "https://huggingface.co/datasets/futo-org/swipe.futo.org/resolve/main/"
+MAX_START_DIST = 0.08
 TRAIN_FILES = ["train.jsonl", "swipe-2/swipe2.jsonl", "swipe-3/swipe3.jsonl",
                "swipe-4/swipe4.jsonl", "swipe-5/swipe5.jsonl"]
 
@@ -89,9 +90,11 @@ def convert(paths, out: Path, limit: int, workers: int, check_alignment=True):
             f = np.stack(feats[before:before + min(n, 2000)]).astype(np.float32)
             first = np.array([QWERTY[w[0]] for w in words[before:before + min(n, 2000)]])
             d = float(np.linalg.norm(f[:, :, 0] - first, axis=1).mean())
-            status = "ok" if d < 0.12 else "LOOKS MISALIGNED - excluded"
+            # Well-aligned sources sit around 0.05 (half a key); swipe-5 (recorded on a much
+            # taller canvas) measures ~0.10, so it is left out
+            status = "ok" if d < MAX_START_DIST else "LOOKS MISALIGNED - excluded"
             print(f"  {p.name}: {n} swipes, start-to-first-letter distance {d:.3f} ({status})")
-            if d >= 0.12:
+            if d >= MAX_START_DIST:
                 del feats[before:], words[before:], ctxs[before:]
     np.savez(out, feats=np.stack(feats), words=np.array(words), context=np.array(ctxs))
     print(f"-> {out}: {len(words)} swipes")
