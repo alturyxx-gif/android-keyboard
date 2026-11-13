@@ -27,6 +27,9 @@ data class LetterKey(val letter: Char, val left: Float, val top: Float, val w: F
 class TouchModel(
     val stats: MutableMap<Char, KeyTouch> = HashMap(),
 ) {
+    // forKey() is called for every hit test: cache its arrays instead of allocating each time
+    @kotlinx.serialization.Transient private val cache = HashMap<Char, FloatArray>()
+
     @Serializable
     data class KeyTouch(var n: Int = 0, var mx: Float = 0f, var my: Float = 0f, var vx: Float = 0f, var vy: Float = 0f)
 
@@ -39,12 +42,14 @@ class TouchModel(
         const val OUTLIER = 0.9f
         const val DEFAULT_SD_X = 0.30f
         const val DEFAULT_SD_Y = 0.32f
+        val NEUTRAL = floatArrayOf(0f, 0f, DEFAULT_SD_X, DEFAULT_SD_Y)
     }
 
     /** Learn from one tap that was meant for [letter] ([dx], [dy] in key widths/heights). */
     fun learn(letter: Char, dx: Float, dy: Float) {
         if (abs(dx) > OUTLIER || abs(dy) > OUTLIER) return
         val s = stats.getOrPut(letter.lowercaseChar()) { KeyTouch() }
+        synchronized(cache) { cache.remove(letter.lowercaseChar()) }
         s.n++
         val r = max(1f / s.n, MIN_RATE)
         val ex = dx - s.mx
@@ -57,8 +62,16 @@ class TouchModel(
 
     /** (offset x, offset y, spread x, spread y) in key sizes; neutral until [MIN_TAPS] taps. */
     fun forKey(letter: Char): FloatArray {
-        val s = stats[letter.lowercaseChar()]
-        if (s == null || s.n < MIN_TAPS) return floatArrayOf(0f, 0f, DEFAULT_SD_X, DEFAULT_SD_Y)
+        val l = letter.lowercaseChar()
+        synchronized(cache) { cache[l]?.let { return it } }
+        val v = compute(l)
+        synchronized(cache) { cache[l] = v }
+        return v
+    }
+
+    private fun compute(letter: Char): FloatArray {
+        val s = stats[letter]
+        if (s == null || s.n < MIN_TAPS) return NEUTRAL
         // Blend towards the defaults while there are few taps, and keep the spread sensible
         val trust = ((s.n - MIN_TAPS) / 80f).coerceIn(0.3f, 1f)
         return floatArrayOf(
@@ -128,7 +141,7 @@ object TapDecision {
         keys: List<LetterKey>, x: Float, y: Float, probs: FloatArray?, touch: TouchModel?, params: Params,
     ): Result? {
         val under = underFinger(keys, x, y) ?: return null
-        val uo = touch?.forKey(under.letter) ?: floatArrayOf(0f, 0f, TouchModel.DEFAULT_SD_X, TouchModel.DEFAULT_SD_Y)
+        val uo = touch?.forKey(under.letter) ?: TouchModel.NEUTRAL
         val ucx = under.cx + uo[0] * under.w
         val ucy = under.cy + uo[1] * under.h
         // Centre zone: never changed
@@ -139,7 +152,7 @@ object TapDecision {
         var bestScore = Float.NEGATIVE_INFINITY
         for (k in keys) {
             if (k !== under && (abs(k.cx - under.cx) > 1.6f * under.w || abs(k.cy - under.cy) > 1.6f * under.h)) continue
-            val o = touch?.forKey(k.letter) ?: floatArrayOf(0f, 0f, TouchModel.DEFAULT_SD_X, TouchModel.DEFAULT_SD_Y)
+            val o = touch?.forKey(k.letter) ?: TouchModel.NEUTRAL
             val dx = (x - (k.cx + o[0] * k.w)) / (o[2] * k.w)
             val dy = (y - (k.cy + o[1] * k.h)) / (o[3] * k.h)
             var score = -0.5f * (dx * dx + dy * dy)

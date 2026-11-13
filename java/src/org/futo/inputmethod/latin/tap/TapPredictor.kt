@@ -72,9 +72,14 @@ object TapPredictor {
         overlayVersion++
     }
 
-    private fun saveTouch(context: Context) = synchronized(this) {
-        learnedSinceSave = 0
-        try { touchFile(context).writeText(json.encodeToString(TouchModel.serializer(), touch ?: return)) } catch (_: Exception) { }
+    private fun saveTouch(context: Context) {
+        val text = synchronized(this) {
+            learnedSinceSave = 0
+            json.encodeToString(TouchModel.serializer(), touch ?: return)
+        }
+        val app = context.applicationContext
+        Thread { try { touchFile(app).writeText(text) } catch (_: Exception) { } }
+            .apply { priority = Thread.MIN_PRIORITY }.start()
     }
 
     /** Learn where you tap from a word whose intended letters are known. */
@@ -95,7 +100,7 @@ object TapPredictor {
             }
             learnedSinceSave += n
         }
-        if (learnedSinceSave >= 50) saveTouch(context)
+        if (learnedSinceSave >= 200) saveTouch(context)
         if (n > 0) overlayVersion++
     }
 

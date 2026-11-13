@@ -16,15 +16,19 @@ import java.lang.ref.WeakReference
  * each key usually land (your touch model). Only drawn when "Show key areas" is on.
  */
 object TapOverlay {
-    private const val STEP = 10 // px grid
+    private const val STEP = 16 // px grid
     private var view: WeakReference<View>? = null
     private val main = Handler(Looper.getMainLooper())
     private var lastVersion = -1
-    private var cells: IntArray = IntArray(0) // x, y, letter index per changed cell
-    private var dots: FloatArray = FloatArray(0)
+    @Volatile private var cells: IntArray = IntArray(0) // x, y, letter index per changed cell
+    @Volatile private var dots: FloatArray = FloatArray(0)
     private val fill = Paint().apply { style = Paint.Style.FILL }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(220, 255, 64, 64); style = Paint.Style.FILL }
     private var watching = false
+    @Volatile private var computing = false
+    private val worker = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "TapOverlay").apply { priority = Thread.MIN_PRIORITY; isDaemon = true }
+    }
 
     /** Called by the keyboard view; it's redrawn whenever the predictions change. */
     @JvmStatic
@@ -50,20 +54,28 @@ object TapOverlay {
     @JvmStatic
     fun draw(canvas: Canvas, context: Context, keyboard: Keyboard?, offX: Int, offY: Int) {
         if (!TapPredictor.debugOverlay || keyboard == null) return
-        if (TapPredictor.overlayVersion != lastVersion) {
+        // Recalculated in the background; the last finished result is drawn meanwhile, so the
+        // debug view never holds up typing
+        if (TapPredictor.overlayVersion != lastVersion && !computing) {
             lastVersion = TapPredictor.overlayVersion
-            compute(context, keyboard)
+            computing = true
+            val app = context.applicationContext
+            worker.execute {
+                try { compute(app, keyboard) } finally { computing = false; main.post { view?.get()?.invalidate() } }
+            }
         }
+        val c = cells
+        val d = dots
         var i = 0
-        while (i < cells.size) {
-            fill.color = colorFor(cells[i + 2])
-            canvas.drawRect((cells[i] + offX).toFloat(), (cells[i + 1] + offY).toFloat(),
-                (cells[i] + offX + STEP).toFloat(), (cells[i + 1] + offY + STEP).toFloat(), fill)
+        while (i + 2 < c.size) {
+            fill.color = colorFor(c[i + 2])
+            canvas.drawRect((c[i] + offX).toFloat(), (c[i + 1] + offY).toFloat(),
+                (c[i] + offX + STEP).toFloat(), (c[i + 1] + offY + STEP).toFloat(), fill)
             i += 3
         }
         i = 0
-        while (i < dots.size) {
-            canvas.drawCircle(dots[i] + offX, dots[i + 1] + offY, 6f, dotPaint)
+        while (i + 1 < d.size) {
+            canvas.drawCircle(d[i] + offX, d[i + 1] + offY, 6f, dotPaint)
             i += 2
         }
     }

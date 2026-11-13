@@ -181,18 +181,24 @@ object PersonalisationStore {
 
     /** Applies retention limits and writes everything to disk. */
     fun flush(context: Context) {
-        synchronized(lock) {
+        // Only copy under the lock; encoding and encrypting happen outside it so typing (which
+        // adds to the history) never waits for a save.
+        val snapshot = synchronized(lock) {
             if (!loaded || !context.isDirectBootUnlocked) return
             val pruned = HistoryRetention.prune(history, System.currentTimeMillis() / 1000)
             if (pruned.size != history.size) {
                 history.clear()
                 history.addAll(pruned)
             }
-            val text = json.encodeToString(StoreFile(ArrayList(history), HashMap(urduVocab.learnedWords())))
-            EncryptedFile.write(storeFile(context), text)
             _historySize.value = history.size
+            StoreFile(ArrayList(history), HashMap(urduVocab.learnedWords()))
+        }
+        synchronized(saveLock) {
+            EncryptedFile.write(storeFile(context), json.encodeToString(snapshot))
         }
     }
+
+    private val saveLock = Any()
 
     // ---- Training run log ----
 

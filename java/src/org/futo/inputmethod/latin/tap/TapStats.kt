@@ -55,9 +55,14 @@ object TapStats {
     }
 
     private fun bump(context: Context, f: (DayStats) -> Unit) {
-        synchronized(this) {
+        val saveNow = synchronized(this) {
             f(today(context))
-            if (++dirty >= 50) save(context)
+            ++dirty >= 200
+        }
+        if (saveNow) {
+            synchronized(this) { dirty = 0 }
+            val app = context.applicationContext
+            Thread { save(app) }.apply { priority = Thread.MIN_PRIORITY }.start()
         }
     }
 
@@ -69,11 +74,14 @@ object TapStats {
     fun onChangedTap(context: Context) = bump(context) { it.changedTaps++ }
     fun onChangedTapUndone(context: Context) = bump(context) { it.changedTapsUndone++ }
 
-    fun save(context: Context) = synchronized(this) {
-        dirty = 0
-        val keep = days.values.sortedBy { it.day }.takeLast(60)
-        days.clear(); keep.forEach { days[it.day] = it }
-        try { file(context).writeText(json.encodeToString(keep)) } catch (_: Exception) { }
+    fun save(context: Context) {
+        val text = synchronized(this) {
+            dirty = 0
+            val keep = days.values.sortedBy { it.day }.takeLast(60)
+            days.clear(); keep.forEach { days[it.day] = it }
+            json.encodeToString(keep.map { it.copy() })
+        }
+        try { file(context).writeText(text) } catch (_: Exception) { }
     }
 
     /** Totals over the last [n] days (including today), or null if nothing was typed. */
