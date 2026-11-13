@@ -100,6 +100,18 @@ This takes minutes, not hours. The newest 15% of your swipes are never trained o
 **Compare models** does the same comparison using the keyboard's own dictionary.
 Repeat whenever you've collected more swipes. Export files can be combined (pass several).
 
+## What kind of mistakes are you getting?
+
+```bash
+python analyze_swipes.py ~/futo-swipes-*.jsonl.gz
+```
+
+Sorts your recorded swipes into: right first time; **ranking** (the right word was offered but
+not first, so better context or word frequency would fix it); **misread** (the right word wasn't
+offered but is in the dictionary, so the personal fine-tune fixes it); **not a word** (not in the
+dictionary, so add it to your personal dictionary). It also lists your most common mistakes.
+It runs locally; add `--no-words` to print numbers only.
+
 ## Files
 
 | | |
@@ -110,6 +122,7 @@ Repeat whenever you've collected more swipes. Export files can be combined (pass
 | `finetune_personal.py` | adapt to your exported swipes |
 | `export.py` | make the phone file, with compatibility checks |
 | `evaluate.py` | compare with FUTO through FUTO's real engine |
+| `analyze_swipes.py` | what kind of mistakes your recorded swipes show |
 | `swipekit/` | model, data handling, training loop, engine wrapper |
 
 ## Notes
