@@ -20,7 +20,7 @@ fi
 echo "== Checking the system"
 command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader \
   || echo "WARNING: nvidia-smi not found - training will run on the CPU (very slow)."
-for tool in "$PY" git cmake g++ make; do
+for tool in "$PY" git g++ make; do
   command -v "$tool" >/dev/null || { echo "Missing '$tool'. Install with: $PKG_HINT"; exit 1; }
 done
 "$PY" -c 'import sys; assert (3,10) <= sys.version_info[:2] <= (3,13)' 2>/dev/null || {
@@ -60,7 +60,9 @@ if [ "${1:-}" != "--no-engine" ]; then
   (cd swipe-library && git submodule update --init --recursive --depth 1 --jobs 8)
   # FUTO's Makefile calls 'python3': make it the same Python as above
   SHIM="$(pwd)/.python-shim"; mkdir -p "$SHIM"; ln -sf "$(command -v "$PY")" "$SHIM/python3"
-  (cd swipe-library && PATH="$SHIM:$PATH" make host -j"$(nproc)")
+  # Also prefer the cmake that FUTO's Makefile installs in swipe-library/.venv (pip), so a
+  # broken or old system cmake (e.g. after an Arch partial upgrade) doesn't stop the build
+  (cd swipe-library && PATH="$SHIM:$(pwd)/.venv/bin:$PATH" make host -j"$(nproc)")
   test -x swipe-library/build/infer_jsonl && echo "Engine built: swipe-library/build/infer_jsonl"
 fi
 
