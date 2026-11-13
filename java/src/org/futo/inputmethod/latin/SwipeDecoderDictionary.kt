@@ -319,6 +319,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
     }
 
     var decoder: SwipeDecoder? = null
+    private var decoderFailed = false
 
     object BeamValues {
         const val shortBeam = 32
@@ -446,7 +447,16 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             ?.takeLast(10)
             ?: emptyList()
 
-        val decoder = getOrInitDecoder()
+        // Custom build: if the swipe model can't be loaded (e.g. a missing or corrupt model
+        // file), fall back to the older swipe engine instead of crashing the keyboard.
+        if(decoderFailed) return null
+        val decoder = try {
+            getOrInitDecoder()
+        } catch(e: Exception) {
+            Log.e("SwipeDecoderDictionary", "Could not load swipe model, using the older swipe engine", e)
+            decoderFailed = true
+            return null
+        }
         decoder.setContext(wordsContext)
         appliedTrieWeights = trieWeights
 
