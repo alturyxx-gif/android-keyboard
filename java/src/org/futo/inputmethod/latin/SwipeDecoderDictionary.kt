@@ -32,10 +32,10 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private const val ENCODER_ASSET = "futo-swipe/honorable_sturgeon/model_fp32.pte"
-private const val ENGLISH_LM_ASSET = "futo-swipe/chosen_planarian/context_lm.pte"
-private const val ENGLISH_LM_VOCAB_ASSET = "futo-swipe/chosen_planarian/vocab.txt"
-private const val ENGLISH_DECODER_ASSET = "futo-swipe/magic_macaw/model_fp32.pte"
+internal const val ENCODER_ASSET = "futo-swipe/honorable_sturgeon/model_fp32.pte"
+internal const val ENGLISH_LM_ASSET = "futo-swipe/chosen_planarian/context_lm.pte"
+internal const val ENGLISH_LM_VOCAB_ASSET = "futo-swipe/chosen_planarian/vocab.txt"
+internal const val ENGLISH_DECODER_ASSET = "futo-swipe/magic_macaw/model_fp32.pte"
 private const val SCORING_ASSET = "futo-swipe/scoring.json"
 
 @Serializable
@@ -338,19 +338,47 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         const val highestBeam = 300
     }
 
-    private fun getOrInitDecoder(): SwipeDecoder = decoder ?: run {
-        val swipeModelPath = getFilePath(context, SWIPE_MODEL)
+    // Which encoder file the current decoder was created with (FUTO's or a custom import)
+    private var loadedEncoderPath: String? = null
+    private var loadedGeneration = -1
+    private var usingCustomModel = false
+    private var lastLayoutInfo: PendingLayoutInfo? = null
 
-        val decoder = SwipeDecoder(
-            encoderPath = swipeModelPath,
-            beamWidth = BeamValues.highestBeam,
-            useExpansion = false, // ITrie contains expanded entries already
-        )
+    private fun getOrInitDecoder(): SwipeDecoder {
+        // Swipe plan, Stage 6: use the imported custom encoder when chosen
+        val customPath = org.futo.inputmethod.latin.swipe.CustomSwipeModel.activePath(context)
+        val generation = org.futo.inputmethod.latin.swipe.SwipeModelState.generation
+        val wantedPath = customPath ?: getFilePath(context, SWIPE_MODEL)
+        decoder?.let { d ->
+            if (wantedPath == loadedEncoderPath && generation == loadedGeneration) return d
+            try { d.close() } catch (_: Exception) { }
+            decoder = null
+        }
 
+        val decoder = try {
+            SwipeDecoder(encoderPath = wantedPath, beamWidth = BeamValues.highestBeam, useExpansion = false)
+        } catch (e: Exception) {
+            if (customPath == null) throw e
+            // A custom model that won't load must never break swiping: use FUTO's
+            Log.e("SwipeDecoderDictionary", "Custom swipe model failed to load, using FUTO's", e)
+            SwipeDiagnostics.customModelError.value = "Your custom model failed to load: ${e.message}"
+            SwipeDecoder(encoderPath = getFilePath(context, SWIPE_MODEL), beamWidth = BeamValues.highestBeam, useExpansion = false)
+                .also { loadedEncoderPath = null; usingCustomModel = false; loadedGeneration = generation; this.decoder = it; reapplyLayout(); return it }
+        }
+
+        SwipeDiagnostics.customModelError.value = null
         this.decoder = decoder
-        applyPendingLayoutInfo()
-
+        loadedEncoderPath = wantedPath
+        loadedGeneration = generation
+        usingCustomModel = customPath != null
+        reapplyLayout()
         return decoder
+    }
+
+    /** After switching encoders, give the new engine the current keyboard again. */
+    private fun reapplyLayout() {
+        if (pendingLayoutInfo == null) pendingLayoutInfo = lastLayoutInfo
+        applyPendingLayoutInfo()
     }
 
     override fun getNextValidCodePoints(composedData: ComposedData?): ArrayList<Int> {
@@ -508,7 +536,9 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
                 val t = decoder.lastTiming()
                 SwipeDiagnostics.lastSwipe.value = SwipeDiagnostics.LastSwipe(
                     timeMillis = System.currentTimeMillis(),
-                    encoder = SWIPE_MODEL.substringBeforeLast('/').substringAfterLast('/'),
+                    encoder = if(usingCustomModel)
+                        "Custom: " + (org.futo.inputmethod.latin.swipe.CustomSwipeModel.info(context)?.displayName ?: "custom")
+                    else "FUTO " + SWIPE_MODEL.substringBeforeLast('/').substringAfterLast('/'),
                     refinerActive = decoder.hasDecoder(),
                     contextModelActive = decoder.hasLm(),
                     totalMs = t.totalUs / 1000f,
@@ -627,13 +657,15 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
                     cx=pend.layout.xs.toFloatArray(),
                     cy=pend.layout.ys.toFloatArray(),
                     tries=pend.tries.toLongArray(),
-                    decoderPath=getFilePath(context, pend.layout.decoder),
+                    // FUTO's layout refiner only works with FUTO's encoder
+                    decoderPath=if(usingCustomModel) "" else getFilePath(context, pend.layout.decoder),
                     lmModelPath=getFilePath(context, pend.layout.lm),
                     lmVocabPath=getFilePath(context, vocabFor(pend.layout.lm))
                 )
                 appliedScoring.value = d.scoring
                 appliedLayoutInfo = pend.layout
                 appliedTries = pend.tries.toLongArray()
+                lastLayoutInfo = pend
             }
             pendingLayoutInfo = null
         }

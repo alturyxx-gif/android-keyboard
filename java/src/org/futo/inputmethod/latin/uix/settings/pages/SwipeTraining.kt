@@ -27,6 +27,13 @@ import androidx.navigation.NavHostController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.LinearProgressIndicator
+import org.futo.inputmethod.latin.swipe.CustomSwipeModel
+import org.futo.inputmethod.latin.swipe.SwipeReplay
+import org.futo.inputmethod.latin.swipe.UseCustomSwipeModel
+import org.futo.inputmethod.latin.uix.settings.useDataStoreValue
 import org.futo.inputmethod.latin.swipe.SwipeDiagnostics
 import org.futo.inputmethod.latin.swipe.SwipeRecording
 import org.futo.inputmethod.latin.swipe.SwipeRecordingEnabled
@@ -57,6 +64,7 @@ fun SwipeEngineStatus() {
             append("${DateUtils.getRelativeTimeSpanString(l.timeMillis)}\n\n")
         }
         append("Refiner check: $refiner")
+        SwipeDiagnostics.customModelError.value?.let { append("\n\n$it") }
     }
     Tip(text)
 }
@@ -75,6 +83,12 @@ fun SwipeTrainingScreen(navController: NavHostController) {
 
         ScreenTitle("Swipe engine")
         SwipeEngineStatus()
+
+        ScreenTitle("Swipe model")
+        CustomModelSection()
+
+        ScreenTitle("Compare on my swipes")
+        ReplaySection()
 
         ScreenTitle("Record my swipes")
         Tip("When on, each swipe is saved together with the word you actually kept " +
@@ -131,4 +145,94 @@ fun SwipeTrainingScreen(navController: NavHostController) {
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
         )
     }
+}
+
+
+@Composable
+private fun CustomModelSection() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var refresh by remember { mutableStateOf(0) }
+    var busy by remember { mutableStateOf(false) }
+    val installed = remember(refresh) { CustomSwipeModel.isInstalled(context) }
+    val info = remember(refresh) { CustomSwipeModel.info(context) }
+    val useCustom = useDataStoreValue(UseCustomSwipeModel)
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        scope.launch {
+            val err = withContext(Dispatchers.IO) { CustomSwipeModel.import(context, uri) }
+            busy = false
+            refresh++
+            Toast.makeText(context, err ?: "Swipe model imported", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    Tip(
+        if (installed && info != null)
+            "Custom model: ${info.displayName} (${"%.1f".format(info.sizeBytes / 1e6)} MB, ${info.config}).\n" +
+                    "FUTO's layout refiner only works with FUTO's model, so it's off while yours is used."
+        else
+            "Import a model trained on your PC with swipe-training/ (the swipe-model-*.zip from export.py). " +
+                    "It's test-run in the swipe engine before it's accepted."
+    )
+    if (installed) {
+        SettingToggleDataStore(
+            title = "Use my custom swipe model",
+            subtitle = if (useCustom) "On: your model is used for swiping" else "Off: FUTO's model is used",
+            setting = UseCustomSwipeModel
+        )
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Button(enabled = !busy, onClick = { picker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) }) {
+            Text(if (installed) "Replace model" else "Import model")
+        }
+        if (installed) {
+            OutlinedButton(enabled = !busy, onClick = {
+                CustomSwipeModel.delete(context)
+                refresh++
+            }) { Text("Remove") }
+        }
+    }
+}
+
+@Composable
+private fun ReplaySection() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var running by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+    var result by remember { mutableStateOf<String?>(null) }
+
+    Tip("Replays the newest 15% of your recorded swipes (the part fine-tuning never trains on) " +
+            "through FUTO's model and your custom model, using the keyboard's own dictionary.")
+    Button(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        enabled = !running,
+        onClick = {
+            running = true
+            progress = 0f
+            result = null
+            scope.launch {
+                result = withContext(Dispatchers.Default) {
+                    try {
+                        SwipeReplay.run(context) { progress = it }.joinToString("\n") { it.line() }
+                    } catch (e: IllegalStateException) {
+                        e.message
+                    } catch (e: Throwable) {
+                        "Comparison failed: ${e.message}"
+                    }
+                }
+                running = false
+            }
+        }
+    ) { Text("Compare models") }
+    if (running) {
+        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(16.dp))
+    }
+    result?.let { Tip(it) }
 }

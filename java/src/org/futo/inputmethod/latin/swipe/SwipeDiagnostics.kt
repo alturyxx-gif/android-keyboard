@@ -24,6 +24,9 @@ object SwipeDiagnostics {
     /** Why the layout refiner is (or isn't) used for the current keyboard. */
     val refinerMatch = mutableStateOf("Not checked yet — open the keyboard and swipe once")
 
+    /** Set when the imported custom swipe model couldn't be loaded (FUTO's is used instead). */
+    val customModelError = mutableStateOf<String?>(null)
+
     /** Details of the most recent completed swipe. */
     val lastSwipe = mutableStateOf<LastSwipe?>(null)
 }

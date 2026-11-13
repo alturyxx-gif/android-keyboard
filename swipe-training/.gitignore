@@ -1,0 +1,8 @@
+.venv/
+data/
+runs/
+exports/
+cache/
+swipe-library/
+__pycache__/
+*.jsonl.gz
