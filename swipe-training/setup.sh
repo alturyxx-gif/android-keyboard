@@ -53,11 +53,14 @@ EOF
 if [ "${1:-}" != "--no-engine" ]; then
   echo "== FUTO's swipe engine (for evaluate.py; takes 10-30 minutes the first time)"
   if [ ! -d swipe-library ]; then
-    git clone --recursive https://gitlab.futo.org/keyboard/swipe-library.git
+    git clone https://gitlab.futo.org/keyboard/swipe-library.git
   fi
+  # Shallow submodules: only the latest version of each library, not years of history
+  # (a full recursive clone is several GB and GitHub serves big histories slowly)
+  (cd swipe-library && git submodule update --init --recursive --depth 1 --jobs 8)
   # FUTO's Makefile calls 'python3': make it the same Python as above
   SHIM="$(pwd)/.python-shim"; mkdir -p "$SHIM"; ln -sf "$(command -v "$PY")" "$SHIM/python3"
-  (cd swipe-library && git submodule update --init --recursive && PATH="$SHIM:$PATH" make host -j"$(nproc)")
+  (cd swipe-library && PATH="$SHIM:$PATH" make host -j"$(nproc)")
   test -x swipe-library/build/infer_jsonl && echo "Engine built: swipe-library/build/infer_jsonl"
 fi
 
