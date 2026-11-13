@@ -252,6 +252,9 @@ All pushed to `claude/keyboard-voice-suggestions-d59gth`. No pull requests were 
 
 ```
 # keyboard (needs Android SDK + NDK 28.2; submodules incl. transcribe.cpp)
+# The swipe models are Git LFS files: without this the APK ships 132-byte placeholders
+# and swiping crashes ("Failed to initialize SwipeDecoder")
+git -C java/assets/futo-swipe lfs pull
 VERSION_CODE=... VERSION_NAME=... ./gradlew assembleCustomRelease
 # tests (optional: VOICE_HOST_LIB_DIR=<desktop build of voiceinput-shared/src/main/cpp>)
 ./gradlew testCustomReleaseUnitTest
