@@ -123,7 +123,10 @@ object PersonalisationStore {
         if (sinceFlush >= 50) {
             sinceFlush = 0
             val appContext = context.applicationContext
-            Thread { flush(appContext) }.apply { priority = Thread.MIN_PRIORITY }.start()
+            Thread {
+                // Never let a failed save take the keyboard down
+                try { flush(appContext) } catch (e: Throwable) { Log.e(TAG, "Background save failed", e) }
+            }.apply { priority = Thread.MIN_PRIORITY }.start()
         }
     }
 
