@@ -1,4 +1,5 @@
 #include <string>
+#include <algorithm>
 #include <cstring>
 #include <functional>
 #include <sys/stat.h>
@@ -406,6 +407,37 @@ static std::string languageArrayToMergedString(JNIEnv *env, jobjectArray languag
 }
 
 // Keyboard (custom build) signature:
+// Output that can't be real speech: a character repeated 6+ times in a row ("êêêêêê"), the same
+// word 5+ times in a row, or more letters than anyone can say in that time (~25 per second).
+// Seen from the GPU on very short clips; the CPU transcribes the same audio correctly.
+static bool looks_garbled(const char *text, int num_samples) {
+    if(!text) return false;
+    int run = 1, letters = 0;
+    unsigned char prev = 0;
+    for(const unsigned char *c = (const unsigned char *)text; *c; c++) {
+        if(isspace(*c)) { prev = 0; run = 1; continue; }
+        if((*c & 0xC0) != 0x80) letters++;           // count UTF-8 characters, not bytes
+        if((*c & 0xC0) == 0x80) continue;            // compare characters by their first byte
+        if(*c == prev && *c != '.' && !isdigit(*c)) { if(++run >= 6) return true; }
+        else run = 1;
+        prev = *c;
+    }
+    const double seconds = std::max(0.5, num_samples / 16000.0);
+    if(letters > 25.0 * seconds + 10) return true;
+    // Same word repeated
+    std::string t(text), last, word;
+    int repeats = 1;
+    for(size_t i = 0; i <= t.size(); i++) {
+        if(i == t.size() || isspace((unsigned char)t[i])) {
+            if(!word.empty()) {
+                if(word == last) { if(++repeats >= 5) return true; } else repeats = 1;
+                last = word; word.clear();
+            }
+        } else word += t[i];
+    }
+    return false;
+}
+
 // inferNative(handle, samples, glossary, textContext, languages, bailLanguages, decodingMode, suppressNonSpeech)
 static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jfloatArray samples_array, jstring prompt, jstring text_context, jobjectArray languages, jobjectArray bail_languages, jint decoding_mode, jboolean suppress_non_speech) {
     auto *state = reinterpret_cast<WhisperModelState *>(handle);
@@ -486,8 +518,21 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
     }
 
     if(state->using_gpu) gpu_step("running speech model on GPU (first run compiles GPU kernels)");
+    // Very short clips (under ~2 s) sometimes came back as garbage on the phone's GPU while the
+    // CPU handled them fine: give the GPU at least 2 s, padded with silence (checked on the CPU
+    // that the padding doesn't change the words).
+    const int min_gpu_samples = 2 * 16000;
+    std::vector<float> padded;
+    const float *run_samples = samples;
+    int run_count = num_samples;
+    if(state->using_gpu && num_samples < min_gpu_samples) {
+        padded.assign(samples, samples + num_samples);
+        padded.resize(min_gpu_samples, 0.0f);
+        run_samples = padded.data();
+        run_count = min_gpu_samples;
+    }
     auto run_start = std::chrono::steady_clock::now();
-    auto result = transcribe_run(state->session, samples, num_samples, &params);
+    auto result = transcribe_run(state->session, run_samples, run_count, &params);
     const long gpu_ms = (long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - run_start).count();
 
     const bool attempted_gpu = state->using_gpu;
@@ -519,6 +564,27 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
                 env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
                 return 0;
             }
+        }
+    }
+    // Garbled GPU text (e.g. "êêêêêê"): run just this clip on the CPU. The GPU session is kept,
+    // so the next clip still uses the GPU.
+    std::string cpu_redo_text;
+    bool cpu_redo = false;
+    if(state->using_gpu && result == TRANSCRIBE_OK && looks_garbled(transcribe_full_text(state->session), num_samples)) {
+        AKLOGE("[voice] GPU output looks garbled, re-running this clip on the CPU");
+        struct transcribe_session *cpu = nullptr;
+        auto r2 = open_session(state->model_path, TRANSCRIBE_BACKEND_CPU, state->n_threads, &cpu);
+        if(r2 == TRANSCRIBE_OK && cpu) {
+            transcribe_set_abort_callback(cpu, abort_callback, (void*)state);
+            auto r3 = transcribe_run(cpu, samples, num_samples, &params);
+            if(r3 == TRANSCRIBE_OK) {
+                const char *t = transcribe_full_text(cpu);
+                cpu_redo_text = t ? t : "";
+                cpu_redo = true;
+                state->last_error = "GPU gave garbled text for this clip (" + std::to_string(num_samples / 16) +
+                        " ms of audio), used CPU for it";
+            }
+            transcribe_session_free(cpu);
         }
     }
     env->ReleaseFloatArrayElements(samples_array, samples, JNI_ABORT);
@@ -554,6 +620,7 @@ static jstring WhisperGGML_infer(JNIEnv *env, jobject instance, jlong handle, jf
         return 0;
     }
 
+    if(cpu_redo) return string2jstring(env, cpu_redo_text.c_str());
     auto txt = transcribe_full_text(state->session);
     return string2jstring(env, txt);
 }
