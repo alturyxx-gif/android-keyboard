@@ -135,14 +135,17 @@ object TapPredictor {
         val gen = ++generation
         snapshot = null
         overlayVersion++
-        if (!enabled || !boostingOn || afterBackspace || isPrivate) return
+        if (!enabled) { lastInfo = "off"; return }
+        if (isPrivate) { lastInfo = "no prediction: private field"; return }
+        if (afterBackspace) { lastInfo = "no prediction: after backspace (FUTO's behaviour)"; return }
+        if (!boostingOn) { lastInfo = "no prediction: smart key-hit detection off, or autocorrect off in this field"; return }
         val words = prevWords?.split(' ')?.filter { it.isNotBlank() && it != "<S>" }?.takeLast(12) ?: emptyList()
         val sentence = words.joinToString(" ")
         val valid = dictValid?.mapNotNull { cp -> Character.toLowerCase(cp).toChar().takeIf { it in 'a'..'z' } }?.toSet()
         // A word's first letter is barely predictable (the best guess is typically only 10-15%),
         // so predictions only start from the second letter; the first uses your touch model only.
         // (This also covers empty messages, and apps that report odd text before the cursor.)
-        if (prefix.isEmpty()) return
+        if (prefix.isEmpty()) { lastInfo = "no prediction: first letter of a word (touch model only)"; return }
         val urdu = RomanUrdu.isMostlyRomanUrdu("$sentence $prefix")
         // Only the newest request matters: if the predictor is busy, this replaces any request
         // still waiting, so fast typing never builds up a queue
@@ -174,8 +177,19 @@ object TapPredictor {
                 val req = pendingRequest ?: break
                 pendingRequest = null
                 if (req.gen != generation) continue // already outdated
-                val lm = if (req.urdu) null else ownModelOrStartLoading()?.nextLetterProbsLocked(req.sentence, req.prefix)
+                val t0 = System.nanoTime()
+                val model = if (req.urdu) null else ownModelOrStartLoading()
+                val lm = model?.nextLetterProbsLocked(req.sentence, req.prefix)
                 val probs = LetterMix.combine(lm, req.valid, personalCompletions(req.prefix, req.urdu), req.prefix)
+                val ms = (System.nanoTime() - t0) / 1_000_000
+                val source = when {
+                    req.urdu -> "Roman Urdu: dictionary"
+                    lm != null -> "model"
+                    model != null -> "model gave nothing; dictionary only"
+                    else -> "model not loaded; dictionary only"
+                }
+                lastInfo = "'${req.prefix}': " + describe(probs) + " · $source · ${ms} ms"
+                overlayVersion++
                 if (generation == req.gen) {
                     snapshot = Snapshot(req.gen, req.prefix, probs)
                     overlayVersion++
@@ -183,6 +197,8 @@ object TapPredictor {
             }
         } catch (e: Throwable) {
             Log.w(TAG, "Next-letter prediction failed", e)
+            lastInfo = "prediction failed: ${e.javaClass.simpleName}: ${e.message}"
+            lastError = lastInfo
         } finally {
             running = false
             // A request may have arrived just as we finished
@@ -209,13 +225,29 @@ object TapPredictor {
             try {
                 val m = LanguageModel(ctx, null, main.modelInfoLoader, main.locale, threadsOverride = 1)
                 if (m.ensureLoaded()) ownModel = m
+                else lastError = "the typing model copy did not load"
             } catch (e: Throwable) {
                 Log.w(TAG, "Could not load the predictor's typing model", e)
+                lastError = "loading the typing model failed: ${e.javaClass.simpleName}: ${e.message}"
             } finally {
                 ownModelLoading = false
             }
         }
         return null
+    }
+
+    /** What happened on the last key press (shown in the debug view and on the settings page) */
+    @Volatile var lastInfo: String = "nothing typed yet"
+        private set
+    @Volatile var lastError: String? = null
+        private set
+
+    private fun describe(p: FloatArray?): String {
+        if (p == null) return "no information"
+        val top = (0 until minOf(26, p.size)).sortedByDescending { p[it] }.take(3)
+            .joinToString(" ") { "${'a' + it} ${(p[it] * 100).toInt()}%" }
+        val end = if (p.size > 26) " · finished ${(p[26] * 100).toInt()}%" else ""
+        return top + end
     }
 
     /** For the Tap accuracy page */

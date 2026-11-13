@@ -24,6 +24,8 @@ object TapOverlay {
     @Volatile private var dots: FloatArray = FloatArray(0)
     private val fill = Paint().apply { style = Paint.Style.FILL }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(220, 255, 64, 64); style = Paint.Style.FILL }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 30f }
+    private val textBg = Paint().apply { color = Color.argb(170, 0, 0, 0); style = Paint.Style.FILL }
     private var watching = false
     @Volatile private var computing = false
     private val worker = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -78,6 +80,11 @@ object TapOverlay {
             canvas.drawCircle(d[i] + offX, d[i + 1] + offY, 6f, dotPaint)
             i += 2
         }
+        // What the predictor did on the last key press (for testing)
+        val info = TapPredictor.lastInfo
+        val w = textPaint.measureText(info)
+        canvas.drawRect(offX.toFloat(), offY.toFloat(), offX + w + 16f, offY + 40f, textBg)
+        canvas.drawText(info, offX + 8f, offY + 30f, textPaint)
     }
 
     private fun compute(context: Context, keyboard: Keyboard) {
