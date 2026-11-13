@@ -101,9 +101,9 @@ object TapOverlay {
                 var x = minX
                 while (x < maxX) {
                     val px = x + STEP / 2f; val py = y + STEP / 2f
-                    val r = if (onOtherKey(px, py)) null else TapDecision.contextRule(keys, px, py, snap?.probs, touch, params)
+                    val r = if (onOtherKey(px, py)) null else TapDecision.contextRule(keys, px, py, snap?.probs, touch, params, TapKeyResolver.spaceOf(keyboard))
                     if (r != null && r.changed) {
-                        out.add(x); out.add(y); out.add(r.letter - 'a')
+                        out.add(x); out.add(y); out.add(if (r.letter == ' ') 26 else r.letter - 'a')
                     }
                     x += STEP
                 }
@@ -120,6 +120,7 @@ object TapOverlay {
     }
 
     private fun colorFor(i: Int): Int {
+        if (i == 26) return Color.argb(110, 255, 255, 255) // space: white
         val hsv = floatArrayOf((i * 137.5f) % 360f, 0.8f, 1f)
         return Color.HSVToColor(90, hsv)
     }

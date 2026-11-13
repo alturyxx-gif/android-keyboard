@@ -1232,6 +1232,11 @@ public final class InputLogic {
      * @param inputTransaction The transaction in progress.
      */
     private void handleSeparatorEvent(final Event event, final InputTransaction inputTransaction) {
+        // Tap plan: a space right after deleting a bottom-row letter was a missed space
+        if (event.mCodePoint == Constants.CODE_SPACE && mWordComposer.isComposingWord() && !mWordComposer.isBatchMode()) {
+            org.futo.inputmethod.latin.tap.TapRecording.onSpace(mImeHelper.getContext(), mWordComposer.size(),
+                    isPrivateField(inputTransaction.mSettingsValues));
+        }
         final int codePoint = event.mCodePoint;
         final SettingsValues settingsValues = inputTransaction.mSettingsValues;
         final boolean wasComposingWord = mWordComposer.isComposingWord();
@@ -1484,9 +1489,10 @@ public final class InputLogic {
             final org.futo.inputmethod.latin.common.InputPointers ptrs = mWordComposer.getInputPointers();
             final boolean hasPtr = lastIndex < ptrs.getPointerSize();
             org.futo.inputmethod.latin.tap.TapRecording.onBackspace(mImeHelper.getContext(), true, deleted,
-                    hasPtr ? ptrs.getXCoordinates()[lastIndex] : -1, hasPtr ? ptrs.getYCoordinates()[lastIndex] : -1, lastIndex);
+                    hasPtr ? ptrs.getXCoordinates()[lastIndex] : -1, hasPtr ? ptrs.getYCoordinates()[lastIndex] : -1, lastIndex,
+                    typedSoFar.substring(0, Math.max(0, typedSoFar.length() - Character.charCount(Math.max(deleted, 1)))));
         } else {
-            org.futo.inputmethod.latin.tap.TapRecording.onBackspace(mImeHelper.getContext(), false, 0, -1, -1, -1);
+            org.futo.inputmethod.latin.tap.TapRecording.onBackspace(mImeHelper.getContext(), false, 0, -1, -1, -1, "");
         }
 
         if (mWordComposer.isComposingWord() && !mConnection.hasSelection()) {

@@ -953,8 +953,8 @@ static std::vector<float> ScoreContinuations(LanguageModelState *state, const st
 
 // Tap plan, Stage 3: probabilities of the next *typed* letter (a..z), given the sentence
 // before the word and the letters typed so far. Uses the model's typed-letter tokens
-// (<XBU><CHAR_x>...), the same format it was trained on for typos. Returns 26 values summing
-// to 1, or an empty vector if the model has no letter tokens. Shares the KV cache like
+// (<XBU><CHAR_x>...), the same format it was trained on for typos. Returns 27 values summing
+// to 1 (a..z, then "word finished"), or an empty vector if the model has no letter tokens. Shares the KV cache like
 // ScoreContinuations (only new tokens are decoded).
 static std::vector<float> NextLetterProbs(LanguageModelState *state, const std::string &context, const std::string &typedPrefix) {
     std::vector<float> out;
@@ -1010,15 +1010,17 @@ static std::vector<float> NextLetterProbs(LanguageModelState *state, const std::
     model->transformerContext.active_context = full;
     state->past_mixes.clear();
 
+    // 26 letters + "the typed word ends here" (<XBC>, which follows the typed letters in the
+    // model's training format), normalised together: out[26] = probability the word is finished
     const float *logits = llama_get_logits_ith(ctx, batch.n_tokens - 1);
+    float vals[27];
+    for(int i = 0; i < 26; i++) vals[i] = logits[state->specialTokens.LETTERS_TO_IDS[i]];
+    vals[26] = logits[state->specialTokens.XBC];
     float maxv = -INFINITY;
-    for(int i = 0; i < 26; i++) maxv = std::max(maxv, logits[state->specialTokens.LETTERS_TO_IDS[i]]);
+    for(float v : vals) maxv = std::max(maxv, v);
     double sum = 0;
-    out.resize(26);
-    for(int i = 0; i < 26; i++) {
-        out[i] = std::exp(logits[state->specialTokens.LETTERS_TO_IDS[i]] - maxv);
-        sum += out[i];
-    }
+    out.resize(27);
+    for(int i = 0; i < 27; i++) { out[i] = std::exp(vals[i] - maxv); sum += out[i]; }
     for(auto &v : out) v = (float)(v / sum);
     return out;
 }
@@ -1182,8 +1184,8 @@ namespace latinime {
         auto *state = reinterpret_cast<LanguageModelState *>(dict);
         if(state == nullptr) return JNI_FALSE;
         auto probs = NextLetterProbs(state, jstring2string(env, context), jstring2string(env, typedPrefix));
-        if(probs.size() != 26 || env->GetArrayLength(outProbs) < 26) return JNI_FALSE;
-        env->SetFloatArrayRegion(outProbs, 0, 26, probs.data());
+        if(probs.size() != 27 || env->GetArrayLength(outProbs) < 27) return JNI_FALSE;
+        env->SetFloatArrayRegion(outProbs, 0, 27, probs.data());
         return JNI_TRUE;
     }
 

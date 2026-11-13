@@ -247,10 +247,16 @@ object LetterMix {
     /** Share of probability given to letters continuing words you often type */
     const val PERSONAL_SHARE = 0.25f
 
+    /**
+     * Returns 27 values: a..z, then the probability that the word is finished. Letters are
+     * scaled by (1 - finished), so after a complete word ("later") no letter gets much pull.
+     * [lm]: the typing model's 27 values (or 26 letters only), or null.
+     */
     fun combine(lm: FloatArray?, dictValid: Set<Char>?, personal: List<Pair<String, Int>>, prefix: String): FloatArray? {
         val p = FloatArray(26)
+        val end = if (lm != null && lm.size >= 27) lm[26].coerceIn(0f, 1f) else 0f
         when {
-            lm != null && lm.size == 26 -> lm.copyInto(p)
+            lm != null && lm.size >= 26 -> for (i in 0 until 26) p[i] = lm[i]
             !dictValid.isNullOrEmpty() -> dictValid.forEach { c -> if (c in 'a'..'z') p[c - 'a'] = 1f }
             personal.isEmpty() -> return null
             else -> p.fill(1f)
@@ -272,7 +278,10 @@ object LetterMix {
                 for (i in 0 until 26) p[i] = (1 - PERSONAL_SHARE) * p[i] + PERSONAL_SHARE * bonus[i]
             }
         }
-        return p
+        val out = FloatArray(27)
+        for (i in 0 until 26) out[i] = p[i] * (1f - end)
+        out[26] = end
+        return out
     }
 
     /** Exponent applied to first-letter predictions (0 = ignore them, 1 = use as is) */

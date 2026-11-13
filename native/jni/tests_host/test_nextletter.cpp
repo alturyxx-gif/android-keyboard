@@ -14,6 +14,7 @@ static std::string top(const std::vector<float> &p, int n) {
     std::sort(idx.begin(), idx.end(), [&](int a, int b) { return p[a] > p[b]; });
     std::string s;
     for(int i = 0; i < n; i++) { char buf[32]; snprintf(buf, sizeof buf, "%c %.2f  ", 'a' + idx[i], p[idx[i]]); s += buf; }
+    char e[32]; snprintf(e, sizeof e, "| finished %.2f", p.size() > 26 ? p[26] : 0.0f); s += e;
     return s;
 }
 
@@ -37,12 +38,29 @@ int main(int argc, char **argv) {
     int ok = 0;
     for(auto &c : cases) {
         auto p = NextLetterProbs(state, c.ctx, c.prefix);
-        int best = std::max_element(p.begin(), p.end()) - p.begin();
+        int best = std::max_element(p.begin(), p.begin() + 26) - p.begin();
         bool good = ('a' + best) == c.expect;
         ok += good;
         printf("%-30s +%-6s -> %s %s\n", c.ctx, c.prefix, top(p, 4).c_str(), good ? "" : "(expected first)");
     }
     printf("== %d of %d cases have the expected letter first\n", ok, (int)(sizeof cases / sizeof cases[0]));
+
+    // "Is the word finished?" right after complete vs incomplete words
+    struct End { const char *ctx; const char *prefix; bool finished; };
+    End ends[] = {
+        {"I'll do it", "later", true}, {"I'm going to the", "store", true}, {"See you", "tomorrow", true},
+        {"I'm going to the", "marke", false}, {"See you", "tomo", false}, {"Can you send me the", "lin", false},
+        {"I'll see", "you", true}, {"Thank", "you", true}, {"What time is the", "meet", false},
+    };
+    int endOk = 0;
+    for(auto &c : ends) {
+        auto p = NextLetterProbs(state, c.ctx, c.prefix);
+        bool good = c.finished ? p[26] > 0.5f : p[26] < 0.2f;
+        endOk += good;
+        printf("%-22s +%-9s finished %.2f %s\n", c.ctx, c.prefix, p[26], good ? "" : "(unexpected)");
+    }
+    printf("== %d of %d word-finished checks as expected\n", endOk, (int)(sizeof ends / sizeof ends[0]));
+    if(endOk < 7) failures++;
 
     // Timing as on the phone: one call per tap while typing a sentence (cache reused)
     const char *sentence = "I think we should meet at the cafe tomorrow afternoon";

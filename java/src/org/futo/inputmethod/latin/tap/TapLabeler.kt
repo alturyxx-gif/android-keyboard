@@ -12,7 +12,17 @@ data class KeyBoxes(
     val width: Int, val height: Int,
     val letters: String,
     val x: List<Int>, val y: List<Int>, val w: List<Int>, val h: List<Int>,
+    /** The space bar's box (x, y, w, h), or empty if unknown */
+    val space: List<Int> = emptyList(),
 ) {
+    /** True if (px, py) is on a bottom-row letter key */
+    fun onBottomRow(px: Int, py: Int): Boolean {
+        if (y.isEmpty()) return false
+        val bottomTop = y.max()
+        for (i in letters.indices) if (y[i] == bottomTop && px >= x[i] && px < x[i] + w[i] && py >= y[i] && py < y[i] + h[i]) return true
+        return false
+    }
+
     fun index(c: Char): Int = letters.indexOf(c.lowercaseChar())
     fun centre(i: Int): Pair<Float, Float> = (x[i] + w[i] / 2f) to (y[i] + h[i] / 2f)
     fun keyWidth(): Float = if (w.isEmpty()) 1f else w.average().toFloat()
@@ -39,6 +49,8 @@ data class TapRecord(
     val fixY: Int = 0,
     val context: List<String> = emptyList(),
     val keys: KeyBoxes,
+    /** For "fix": the letters of the word typed before the deleted letter */
+    val prefix: String = "",
 )
 
 object TapSource {
@@ -82,7 +94,7 @@ class TapLabeler {
     /** Backspace went into the committed word: unless it turns out to be an autocorrect undo, drop it */
     private var pendingEdited = false
 
-    private data class Deleted(val letter: Char, val x: Int, val y: Int, val index: Int)
+    private data class Deleted(val letter: Char, val x: Int, val y: Int, val index: Int, val prefix: String)
     private var lastDeleted: Deleted? = null
 
     fun onCommit(c: TapCommit): List<TapRecord> {
@@ -115,8 +127,21 @@ class TapLabeler {
     }
 
     /** The last letter of the word being typed was deleted (it was at [index]). */
-    fun onLetterDeleted(letter: Char, x: Int, y: Int, index: Int) {
-        lastDeleted = if (letter.isLetter()) Deleted(letter.lowercaseChar(), x, y, index) else null
+    fun onLetterDeleted(letter: Char, x: Int, y: Int, index: Int, prefix: String = "") {
+        lastDeleted = if (letter.isLetter()) Deleted(letter.lowercaseChar(), x, y, index, prefix) else null
+    }
+
+    /**
+     * Space was typed right after deleting the last letter: if that letter was on the bottom row
+     * (just above the space bar), it was a missed space.
+     */
+    fun onSpaceTyped(index: Int, time: Long, context: List<String>, keys: KeyBoxes?): TapRecord? {
+        val d = lastDeleted
+        lastDeleted = null
+        if (d == null || keys == null || index != d.index || !keys.onBottomRow(d.x, d.y)) return null
+        return TapRecord(time = time, kind = "fix", typed = d.letter.toString(), word = " ",
+            source = TapSource.FIX, tapX = listOf(d.x), tapY = listOf(d.y), context = context, keys = keys,
+            prefix = d.prefix)
     }
 
     /** A letter was typed at [index] of the word being typed. */
@@ -130,7 +155,7 @@ class TapLabeler {
         if (abs(x - d.x) > FIX_MAX_KEYS * kw || abs(y - d.y) > FIX_MAX_KEYS * kw) return null
         return TapRecord(time = time, kind = "fix", typed = d.letter.toString(), word = l.toString(),
             source = TapSource.FIX, tapX = listOf(d.x), tapY = listOf(d.y), fixX = x, fixY = y,
-            context = context, keys = keys)
+            context = context, keys = keys, prefix = d.prefix)
     }
 
     private fun finalizePending(): List<TapRecord> {

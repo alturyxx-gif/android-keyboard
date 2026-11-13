@@ -58,10 +58,12 @@ object TapRecording {
         val keys = kb.sortedKeys.filter { Character.isLetter(it.code) }
             .distinctBy { Character.toLowerCase(it.code) }
         cachedKeyboard = kb
+        val sp = kb.sortedKeys.firstOrNull { it.code == ' '.code }
         cachedBoxes = if (keys.size < 10) null else KeyBoxes(
             width = kb.mBaseWidth, height = kb.mBaseHeight,
             letters = keys.joinToString("") { Character.toString(Character.toLowerCase(it.code)) },
             x = keys.map { it.x }, y = keys.map { it.y }, w = keys.map { it.width }, h = keys.map { it.height },
+            space = sp?.let { listOf(it.x, it.y, it.width, it.height) } ?: emptyList(),
         )
         cachedBoxes
     }
@@ -84,13 +86,23 @@ object TapRecording {
         if (recording(context)) add(context, listOf(fix))
     }
 
+    /** Space typed while a word was being composed (index = letters in the word). */
     @JvmStatic
-    fun onBackspace(context: Context, composing: Boolean, deletedCodePoint: Int, x: Int, y: Int, index: Int) {
+    fun onSpace(context: Context, index: Int, isPrivate: Boolean) {
+        TapKeyFeedback.onSpaceTyped(context)
+        if (isPrivate) return
+        val fix = synchronized(this) { labeler.onSpaceTyped(index, System.currentTimeMillis(), emptyList(), currentKeys()) } ?: return
+        TapStats.onMidWordFix(context)
+        if (recording(context)) add(context, listOf(fix))
+    }
+
+    @JvmStatic
+    fun onBackspace(context: Context, composing: Boolean, deletedCodePoint: Int, x: Int, y: Int, index: Int, prefix: String) {
         TapStats.onBackspace(context)
         TapKeyFeedback.onBackspace(context)
         synchronized(this) {
             if (composing) {
-                if (deletedCodePoint > 0 && x >= 0) labeler.onLetterDeleted(deletedCodePoint.toChar(), x, y, index)
+                if (deletedCodePoint > 0 && x >= 0) labeler.onLetterDeleted(deletedCodePoint.toChar(), x, y, index, prefix)
             } else {
                 labeler.onEditCommitted()
             }

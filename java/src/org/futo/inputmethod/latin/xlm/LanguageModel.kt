@@ -401,7 +401,7 @@ class LanguageModel(
      */
     fun nextLetterProbsLocked(sentence: String, typedPrefix: String): FloatArray? {
         if (mNativeState == 0L) return null
-        val out = FloatArray(26)
+        val out = FloatArray(27) // a..z, then "word finished"
         return if (nextLetterProbsNative(mNativeState, sentence, typedPrefix, out)) out else null
     }
 

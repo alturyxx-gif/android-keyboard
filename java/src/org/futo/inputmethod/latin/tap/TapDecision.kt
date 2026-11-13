@@ -98,7 +98,13 @@ object TapDecision {
         val strength: Float = 0.5f,
         /** Fraction of the key (width and height) around its centre that is never changed */
         val centreZone: Float = 0.6f,
-        val minProb: Float = 0.002f,
+        /**
+         * Added to every probability before taking the log: when no letter is likely (e.g. the
+         * word is probably finished) the differences between letters become small.
+         */
+        val smooth: Float = 0.1f,
+        /** A bottom-row tap can only become space when the word is at least this likely finished */
+        val minSpaceProb: Float = 0.5f,
     )
 
     data class Result(val letter: Char, val underFinger: Char, val changed: Boolean)
@@ -142,6 +148,7 @@ object TapDecision {
      */
     fun contextRule(
         keys: List<LetterKey>, x: Float, y: Float, probs: FloatArray?, touch: TouchModel?, params: Params,
+        space: LetterKey? = null,
     ): Result? {
         val under = underFinger(keys, x, y) ?: return null
         // Only taps on a letter key or in the narrow gaps between letter keys can be moved; in the
@@ -171,9 +178,19 @@ object TapDecision {
             if (probs != null) {
                 val i = k.letter.lowercaseChar() - 'a'
                 val p = if (i in 0..25) probs[i] else 0f
-                score += params.strength * ln(max(p, params.minProb))
+                score += params.strength * ln(p + params.smooth)
             }
             if (score > bestScore) { bestScore = score; best = k }
+        }
+        // Missed space: a tap on the lower part of a bottom-row letter directly above the space
+        // bar, when the word is probably finished, can be a space
+        if (space != null && probs != null && probs.size > 26 && probs[26] >= params.minSpaceProb &&
+            x >= space.left && x < space.left + space.w && y > under.cy &&
+            space.top - (under.top + under.h) < 0.5f * under.h && space.top > under.top) {
+            val so = touch?.forKey(under.letter) ?: TouchModel.NEUTRAL
+            val dy = (y - space.cy) / (so[3] * under.h)
+            val spaceScore = -0.5f * dy * dy + params.strength * ln(probs[26] + params.smooth)
+            if (spaceScore > bestScore) return Result(' ', under.letter, true)
         }
         return Result(best.letter, under.letter, best.letter != under.letter)
     }

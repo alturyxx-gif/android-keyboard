@@ -19,7 +19,7 @@ object TapReplay {
     data class Report(val rows: List<Row>, val bestStrength: Float?, val note: String)
 
     private class Case(val keys: List<LetterKey>, val x: Float, val y: Float, val meant: Char,
-                       val sentence: String, val prefix: String)
+                       val sentence: String, val prefix: String, val space: LetterKey?)
 
     val STRENGTHS = listOf(0f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f)
     const val MAX_TAPS = 3000
@@ -30,8 +30,11 @@ object TapReplay {
         for (r in records.asReversed()) { // newest first
             if (cases.size >= MAX_TAPS) break
             val keys = LetterKey.fromBoxes(r.keys)
+            val sp = r.keys.space.takeIf { it.size == 4 }?.let { LetterKey(' ', it[0].toFloat(), it[1].toFloat(), it[2].toFloat(), it[3].toFloat()) }
             if (r.kind == "fix") {
-                cases.add(Case(keys, r.tapX[0].toFloat(), r.tapY[0].toFloat(), r.word[0].lowercaseChar(), "", ""))
+                // Mid-word fixes: meant letter (or a space), with the word typed before it
+                cases.add(Case(keys, r.tapX[0].toFloat(), r.tapY[0].toFloat(), r.word[0].lowercaseChar(),
+                    r.context.joinToString(" "), r.prefix.lowercase(), sp))
                 continue
             }
             val meant = r.word.lowercase()
@@ -39,7 +42,7 @@ object TapReplay {
             if (!meant.all { it in 'a'..'z' && r.keys.index(it) >= 0 }) continue
             val sentence = r.context.joinToString(" ")
             for (i in meant.indices) {
-                cases.add(Case(keys, r.tapX[i].toFloat(), r.tapY[i].toFloat(), meant[i], sentence, meant.substring(0, i)))
+                cases.add(Case(keys, r.tapX[i].toFloat(), r.tapY[i].toFloat(), meant[i], sentence, meant.substring(0, i), sp))
             }
         }
         if (cases.isEmpty()) throw IllegalStateException("No recorded taps yet. Turn on \"Record my taps\" and type for a while.")
@@ -82,11 +85,11 @@ object TapReplay {
             }))
         }
         rows.add(Row("Your touch model only", cases.size, count { c, _ ->
-            TapDecision.contextRule(c.keys, c.x, c.y, null, touch, TapDecision.Params())?.letter
+            TapDecision.contextRule(c.keys, c.x, c.y, null, touch, TapDecision.Params(), c.space)?.letter
         }))
         var best: Pair<Float, Int>? = null
         for (s in STRENGTHS.drop(1)) {
-            val wrong = count { c, p -> TapDecision.contextRule(c.keys, c.x, c.y, p, touch, TapDecision.Params(strength = s))?.letter }
+            val wrong = count { c, p -> TapDecision.contextRule(c.keys, c.x, c.y, p, touch, TapDecision.Params(strength = s), c.space)?.letter }
             rows.add(Row("Context-aware, strength ${"%.2f".format(s)}", cases.size, wrong))
             if (best == null || wrong < best.second) best = s to wrong
         }

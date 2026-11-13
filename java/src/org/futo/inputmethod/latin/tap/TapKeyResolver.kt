@@ -13,6 +13,8 @@ object TapKeyResolver {
     private var cachedKeyboard: Keyboard? = null
     private var letterKeys: List<LetterKey> = emptyList()
     private var keyByLetter: Map<Char, Key> = emptyMap()
+    private var spaceKey: Key? = null
+    private var spaceBox: LetterKey? = null
     @Volatile private var appContext: Context? = null
 
     fun attach(context: Context) {
@@ -29,10 +31,14 @@ object TapKeyResolver {
                     it.width.toFloat(), it.height.toFloat())
             }
             keyByLetter = keys.associateBy { Character.toLowerCase(it.code).toChar() }
+            spaceKey = keyboard.sortedKeys.firstOrNull { it.code == ' '.code }
+            spaceBox = spaceKey?.let { LetterKey(' ', it.x.toFloat(), it.y.toFloat(), it.width.toFloat(), it.height.toFloat()) }
             cachedKeyboard = keyboard
         }
         letterKeys
     }
+
+    fun spaceOf(keyboard: Keyboard): LetterKey? { lettersOf(keyboard); return spaceBox }
 
     /**
      * [baseKey] is what FUTO's detection chose. Returns the key to use (usually the same).
@@ -47,9 +53,9 @@ object TapKeyResolver {
         if (keys.size < 10) return baseKey
         // Only for keyboards made of plain lower/upper-case letters keys (not symbols pages)
         val params = TapDecision.Params(strength = TapPredictor.strength * TapKeyFeedback.strengthMultiplier())
-        val r = TapDecision.contextRule(keys, x.toFloat(), y.toFloat(), snap.probs, TapPredictor.touchModel(context), params)
+        val r = TapDecision.contextRule(keys, x.toFloat(), y.toFloat(), snap.probs, TapPredictor.touchModel(context), params, spaceBox)
             ?: return baseKey
-        val chosen = keyByLetter[r.letter] ?: return baseKey
+        val chosen = (if (r.letter == ' ') spaceKey else keyByLetter[r.letter]) ?: return baseKey
         if (Character.toLowerCase(chosen.code) != Character.toLowerCase(baseKey.code)) {
             // Only count it as "changed" when it differs from the key under the finger
             if (r.changed) TapKeyFeedback.onTapChanged()

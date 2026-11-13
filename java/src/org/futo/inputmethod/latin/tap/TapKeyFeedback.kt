@@ -27,6 +27,9 @@ object TapKeyFeedback {
         }
     }
 
+    /** A space was typed (it may itself be a changed tap: a bottom-row letter moved to space). */
+    fun onSpaceTyped(context: Context) = onLetterTyped(context)
+
     fun onBackspace(context: Context) {
         if (state == State.AWAITING_NEXT || state == State.CHANGED_TAP) {
             TapStats.onChangedTapUndone(context)

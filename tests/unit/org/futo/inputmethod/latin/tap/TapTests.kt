@@ -83,6 +83,79 @@ class TapDecisionTest {
     }
 }
 
+/** Space bar below the bottom row, under x c v b n (x 250..750). */
+private val SPACE = LetterKey(' ', 250f, 450f, 500f, 150f)
+private fun finished(end: Float, vararg pairs: Pair<Char, Float>): FloatArray {
+    val letters = probs(*pairs)
+    val out = FloatArray(27)
+    for (i in 0 until 26) out[i] = letters[i] * (1 - end)
+    out[26] = end
+    return out
+}
+
+class MissedSpaceTest {
+    private val params = TapDecision.Params(strength = 1.0f)
+
+    @Test fun lowerEdgeOfBottomRowBecomesSpaceWhenWordIsFinished() {
+        val (vx, vy) = centre('v')
+        val r = TapDecision.contextRule(KEYS, vx, vy + 60, finished(0.95f), null, params, SPACE)!!
+        assertEquals(' ', r.letter); assertTrue(r.changed)
+    }
+
+    @Test fun staysALetterWhenTheWordIsNotFinished() {
+        val (vx, vy) = centre('v')
+        assertEquals('v', TapDecision.contextRule(KEYS, vx, vy + 60, finished(0.2f), null, params, SPACE)!!.letter)
+    }
+
+    @Test fun middleOfTheKeyIsNeverSpace() {
+        val (vx, vy) = centre('v')
+        assertEquals('v', TapDecision.contextRule(KEYS, vx, vy + 10, finished(0.99f), null, params, SPACE)!!.letter)
+    }
+
+    @Test fun upperEdgeAndOtherRowsAreNeverSpace() {
+        val (vx, vy) = centre('v')
+        assertTrue(TapDecision.contextRule(KEYS, vx, vy - 60, finished(0.99f), null, params, SPACE)!!.letter != ' ')
+        val (fx, fy) = centre('f')
+        assertTrue(TapDecision.contextRule(KEYS, fx, fy + 60, finished(0.99f), null, params, SPACE)!!.letter != ' ')
+    }
+
+    @Test fun keysNotAboveTheSpaceBarAreNeverSpace() {
+        val (zx, zy) = centre('z') // z is left of the space bar
+        assertEquals('z', TapDecision.contextRule(KEYS, zx, zy + 60, finished(0.99f), null, params, SPACE)!!.letter)
+    }
+
+    @Test fun finishedWordGivesLettersLittlePull() {
+        // After a complete word, a likely-ish continuation (s) shouldn't steal an edge tap on a
+        val (ax, ay) = centre('a')
+        val r = TapDecision.contextRule(KEYS, ax + 45, ay, finished(0.95f, 's' to 0.6f), null, params)!!
+        assertEquals('a', r.letter)
+    }
+
+    @Test fun missedSpaceIsRecordedAsAFix() {
+        val l = TapLabeler()
+        val (vx, vy) = centre('v')
+        val kb = KB.copy(space = listOf(250, 450, 500, 150))
+        l.onLetterDeleted('v', vx.toInt(), (vy + 60).toInt(), 5, "later")
+        val fix = l.onSpaceTyped(5, 1L, emptyList(), kb)!!
+        assertEquals(" ", fix.word); assertEquals("later", fix.prefix)
+        // A deleted letter from the top row isn't a missed space
+        val (ex, ey) = centre('e')
+        l.onLetterDeleted('e', ex.toInt(), ey.toInt(), 5, "later")
+        assertNull(l.onSpaceTyped(5, 1L, emptyList(), kb))
+    }
+}
+
+class LetterMixEndTest {
+    @Test fun lettersAreScaledByWordFinished() {
+        val lm = FloatArray(27) { if (it < 26) 0.9f / 26 else 0.1f }
+        lm[26] = 0.9f
+        val p = LetterMix.combine(lm, null, emptyList(), "later")!!
+        assertEquals(27, p.size)
+        assertEquals(0.9f, p[26], 1e-5f)
+        assertEquals(0.1f, (0 until 26).sumOf { p[it].toDouble() }.toFloat(), 1e-4f)
+    }
+}
+
 class TouchModelTest {
     @Test fun learnsConsistentOffsetAfterEnoughTaps() {
         val tm = TouchModel()
