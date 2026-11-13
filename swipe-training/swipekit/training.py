@@ -1,6 +1,7 @@
 """Training loop shared by train.py and finetune_personal.py."""
 import copy
 import json
+import warnings
 import math
 import random
 import time
@@ -118,6 +119,11 @@ def evaluate(model, loader, device, max_batches=None):
     return total / max(1, n), exact / max(1, n)
 
 
+# With mixed precision the first optimiser step is skipped on purpose (gradient scaling
+# calibration), which makes PyTorch warn about the scheduler order. Harmless.
+warnings.filterwarnings("ignore", message="Detected call of `lr_scheduler.step()` before `optimizer.step()`")
+
+
 def train(model, train_set, dev_set, out_dir: Path, *, epochs, batch, lr, device,
           workers=4, amp=True, log_every=200, resume=True, weight_decay=0.05,
           warmup_frac=0.03, ema_decay=0.999, keep=2, note=""):
@@ -166,7 +172,7 @@ def train(model, train_set, dev_set, out_dir: Path, *, epochs, batch, lr, device
             scaler.update()
             sched.step()
             ema.update(model)
-            run += float(loss)
+            run += loss.item()
             if (step + 1) % log_every == 0:
                 el = time.time() - t0
                 eta = el / (step + 1) * (len(dl) - step - 1)
