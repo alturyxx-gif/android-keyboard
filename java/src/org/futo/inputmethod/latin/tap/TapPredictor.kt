@@ -139,9 +139,10 @@ object TapPredictor {
         val words = prevWords?.split(' ')?.filter { it.isNotBlank() && it != "<S>" }?.takeLast(12) ?: emptyList()
         val sentence = words.joinToString(" ")
         val valid = dictValid?.mapNotNull { cp -> Character.toLowerCase(cp).toChar().takeIf { it in 'a'..'z' } }?.toSet()
-        // Nothing to go on (empty message, or a new line with nothing before it): no letter
-        // predictions, only your touch model
-        if (prefix.isEmpty() && sentence.isBlank()) return
+        // A word's first letter is barely predictable (the best guess is typically only 10-15%),
+        // so predictions only start from the second letter; the first uses your touch model only.
+        // (This also covers empty messages, and apps that report odd text before the cursor.)
+        if (prefix.isEmpty()) return
         val urdu = RomanUrdu.isMostlyRomanUrdu("$sentence $prefix")
         // Only the newest request matters: if the predictor is busy, this replaces any request
         // still waiting, so fast typing never builds up a queue
@@ -174,9 +175,7 @@ object TapPredictor {
                 pendingRequest = null
                 if (req.gen != generation) continue // already outdated
                 val lm = if (req.urdu) null else ownModelOrStartLoading()?.nextLetterProbsLocked(req.sentence, req.prefix)
-                var probs = LetterMix.combine(lm, req.valid, personalCompletions(req.prefix, req.urdu), req.prefix)
-                // A word's first letter is much harder to guess than the rest: tone it down
-                if (req.prefix.isEmpty()) probs = LetterMix.flatten(probs, LetterMix.WORD_START_EXPONENT)
+                val probs = LetterMix.combine(lm, req.valid, personalCompletions(req.prefix, req.urdu), req.prefix)
                 if (generation == req.gen) {
                     snapshot = Snapshot(req.gen, req.prefix, probs)
                     overlayVersion++

@@ -58,9 +58,9 @@ object TapReplay {
             }
             if (valid != null) dictAvailable = true
             val key = c.sentence + "|" + c.prefix
-            val p = if (c.sentence.isEmpty() && c.prefix.isEmpty()) null else cache.getOrPut(key) {
-                val r = TapPredictor.computeForReplay(c.sentence, c.prefix, valid)
-                if (c.prefix.isEmpty()) LetterMix.flatten(r, LetterMix.WORD_START_EXPONENT) else r
+            // Same rule as the keyboard: no predictions for a word's first letter
+            val p = if (c.prefix.isEmpty()) null else cache.getOrPut(key) {
+                TapPredictor.computeForReplay(c.sentence, c.prefix, valid)
             }
             probs.add(p)
             valids.add(valid)
