@@ -103,6 +103,9 @@ object TapDecision {
 
     data class Result(val letter: Char, val underFinger: Char, val changed: Boolean)
 
+    /** How far outside a letter key (fraction of a key) a tap can be and still be moved */
+    const val MAX_GAP = 0.15f
+
     /** The key under the finger: the box containing the tap, else the nearest centre. */
     fun underFinger(keys: List<LetterKey>, x: Float, y: Float): LetterKey? =
         keys.firstOrNull { it.contains(x, y) } ?: keys.minByOrNull { dist2(it.cx - x, it.cy - y) }
@@ -141,6 +144,15 @@ object TapDecision {
         keys: List<LetterKey>, x: Float, y: Float, probs: FloatArray?, touch: TouchModel?, params: Params,
     ): Result? {
         val under = underFinger(keys, x, y) ?: return null
+        // Only taps on a letter key or in the narrow gaps between letter keys can be moved; in the
+        // keyboard's outer margins there's nothing to compare against, so leave them alone
+        if (!under.contains(x, y)) {
+            val near = keys.minOf { k ->
+                val ex = x.coerceIn(k.left, k.left + k.w); val ey = y.coerceIn(k.top, k.top + k.h)
+                maxOf(abs(x - ex) / k.w, abs(y - ey) / k.h)
+            }
+            if (near > MAX_GAP) return Result(under.letter, under.letter, false)
+        }
         val uo = touch?.forKey(under.letter) ?: TouchModel.NEUTRAL
         val ucx = under.cx + uo[0] * under.w
         val ucy = under.cy + uo[1] * under.h

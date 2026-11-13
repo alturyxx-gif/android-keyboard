@@ -90,13 +90,18 @@ object TapOverlay {
         val maxX = keys.maxOf { it.left + it.w }.toInt()
         val minY = keys.minOf { it.top }.toInt()
         val maxY = keys.maxOf { it.top + it.h }.toInt()
+        // Taps on other keys (shift, backspace, ...) are never changed: don't shade them
+        val others = keyboard.sortedKeys.filter { !Character.isLetter(it.code) }
+            .map { floatArrayOf(it.x.toFloat(), it.y.toFloat(), (it.x + it.width).toFloat(), (it.y + it.height).toFloat()) }
+        fun onOtherKey(px: Float, py: Float) = others.any { px >= it[0] && px < it[2] && py >= it[1] && py < it[3] }
         val out = ArrayList<Int>()
         if (TapPredictor.enabled) {
             var y = minY
             while (y < maxY) {
                 var x = minX
                 while (x < maxX) {
-                    val r = TapDecision.contextRule(keys, x + STEP / 2f, y + STEP / 2f, snap?.probs, touch, params)
+                    val px = x + STEP / 2f; val py = y + STEP / 2f
+                    val r = if (onOtherKey(px, py)) null else TapDecision.contextRule(keys, px, py, snap?.probs, touch, params)
                     if (r != null && r.changed) {
                         out.add(x); out.add(y); out.add(r.letter - 'a')
                     }

@@ -54,6 +54,21 @@ class TapDecisionTest {
         assertTrue(r.letter == 'q' || r.letter == 'w')
     }
 
+    @Test fun tapsInTheOuterMarginAreNotMoved() {
+        val (lx, ly) = centre('l')
+        // Well to the right of l (outside every letter key): never moved to p, even if p is likely
+        val r = TapDecision.contextRule(KEYS, lx + 120, ly, probs('p' to 0.95f), null, params)!!
+        assertEquals('l', r.letter); assertFalse(r.changed)
+    }
+
+    @Test fun tapsInTheGapBetweenRowsCanStillBeMoved() {
+        val (ex, ey) = centre('e')
+        // Just below e, in a small gap (inside 0.15 key): allowed to go to the likely letter
+        val keys = KEYS.map { if (it.letter in "asdfghjkl") it.copy(top = it.top + 10) else it }
+        val r = TapDecision.contextRule(keys, ex + 40, ey + 80, probs('r' to 0.95f), null, params)!!
+        assertEquals('r', r.letter)
+    }
+
     @Test fun strengthZeroIsTouchOnly() {
         val (cx, cy) = centre('e')
         val r = TapDecision.contextRule(KEYS, cx + 45, cy, probs('r' to 0.9f), null, TapDecision.Params(strength = 0f))!!
