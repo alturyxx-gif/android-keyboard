@@ -115,6 +115,7 @@ fun TapAccuracyScreen(navController: NavHostController) {
             subtitle = "Shades where taps now go to a different key, and dots where you usually hit each key",
             setting = TapDebugOverlay
         )
+        Tip("Predictor: " + TapPredictor.statusText())
         Tip("Your touch model: ${touch.tapsLearned()} taps learned, ${touch.keysLearned()} keys adjusted " +
                 "(a key needs 20 taps before its offset is used).")
         OutlinedButton(modifier = Modifier.padding(horizontal = 16.dp), onClick = {

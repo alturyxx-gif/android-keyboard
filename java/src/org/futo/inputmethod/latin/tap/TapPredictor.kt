@@ -218,6 +218,15 @@ object TapPredictor {
         return null
     }
 
+    /** For the Tap accuracy page */
+    fun statusText(): String = when {
+        !enabled -> "Off"
+        ownModel?.mNativeState?.let { it != 0L } == true -> "Typing model loaded (letter and word-finished predictions on)"
+        ownModelLoading -> "Loading the typing model..."
+        modelProvider?.invoke() == null -> "Typing model not available (dictionary and your words only; no missed-space correction)"
+        else -> "Typing model not loaded yet: type a word to load it"
+    }
+
     /** Free the predictor's model copy (e.g. when the typing model is reloaded). */
     fun releaseModel() {
         val m = ownModel ?: return

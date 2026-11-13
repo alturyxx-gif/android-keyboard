@@ -102,6 +102,14 @@ class MissedSpaceTest {
         assertEquals(' ', r.letter); assertTrue(r.changed)
     }
 
+    @Test fun worksWithRowGapAndATallSpaceBar() {
+        // 20 px gap below the bottom row and a 200 px tall space bar (like a real phone keyboard)
+        val tall = LetterKey(' ', 250f, 470f, 500f, 200f)
+        val (vx, vy) = centre('v')
+        val r = TapDecision.contextRule(KEYS, vx, vy + 62, finished(0.9f), null, params, tall)!!
+        assertEquals(' ', r.letter)
+    }
+
     @Test fun staysALetterWhenTheWordIsNotFinished() {
         val (vx, vy) = centre('v')
         assertEquals('v', TapDecision.contextRule(KEYS, vx, vy + 60, finished(0.2f), null, params, SPACE)!!.letter)

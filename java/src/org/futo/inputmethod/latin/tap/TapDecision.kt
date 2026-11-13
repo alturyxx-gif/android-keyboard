@@ -102,7 +102,7 @@ object TapDecision {
          * Added to every probability before taking the log: when no letter is likely (e.g. the
          * word is probably finished) the differences between letters become small.
          */
-        val smooth: Float = 0.1f,
+        val smooth: Float = 0.05f,
         /** A bottom-row tap can only become space when the word is at least this likely finished */
         val minSpaceProb: Float = 0.5f,
     )
@@ -188,7 +188,13 @@ object TapDecision {
             x >= space.left && x < space.left + space.w && y > under.cy &&
             space.top - (under.top + under.h) < 0.5f * under.h && space.top > under.top) {
             val so = touch?.forKey(under.letter) ?: TouchModel.NEUTRAL
-            val dy = (y - space.cy) / (so[3] * under.h)
+            // The space bar is tall and its centre is far below: compare symmetrically around
+            // the dividing line between the letter and the space bar, so a tap right on the line
+            // fits both equally (the letter's aim point mirrored across the line)
+            val letterAim = under.cy + so[1] * under.h
+            val line = (under.top + under.h + space.top) / 2f
+            val spaceAim = line + (line - letterAim)
+            val dy = (y - spaceAim) / (so[3] * under.h)
             val spaceScore = -0.5f * dy * dy + params.strength * ln(probs[26] + params.smooth)
             if (spaceScore > bestScore) return Result(' ', under.letter, true)
         }
