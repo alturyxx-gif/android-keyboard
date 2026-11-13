@@ -10,9 +10,13 @@ metadata.json, after checking that the model only uses operations the phone supp
 gives the same results as in training. Then run evaluate.py on the export folder.
 """
 import argparse
+import warnings
 import json
 import sys
 from pathlib import Path
+
+# PyTorch/ExecuTorch print many harmless FutureWarnings during export
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 sys.path.insert(0, str(Path(__file__).parent))
 from swipekit.export_pte import export, make_zip, write_metadata  # noqa: E402

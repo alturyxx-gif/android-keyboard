@@ -10,11 +10,15 @@ Interrupted? Run the same command again: it continues from the last finished epo
 Result: runs/<size>/best.pt  (then run export.py and evaluate.py)
 """
 import argparse
+import warnings
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
+
+# PyTorch/ExecuTorch print many harmless FutureWarnings during export
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 sys.path.insert(0, str(Path(__file__).parent))
 from swipekit.model import SwipeEncoder, ModelConfig  # noqa: E402

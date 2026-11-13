@@ -12,12 +12,16 @@ Public data is mixed in so the model doesn't forget how other words look.
 Result: runs/personal/best.pt -> python export.py runs/personal/best.pt --name mine
 """
 import argparse
+import warnings
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import ConcatDataset, Subset
+
+# PyTorch/ExecuTorch print many harmless FutureWarnings during export
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 sys.path.insert(0, str(Path(__file__).parent))
 from swipekit.data import AugmentConfig, parse_personal_line  # noqa: E402

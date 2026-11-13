@@ -14,11 +14,15 @@ four suggestions ("top-4"), on FUTO's test swipes (other people, never trained o
 Decision rule (SWIPE_PLAN.md): use your model only if it beats FUTO's full setup on both.
 """
 import argparse
+import warnings
 import json
 import sys
 import tempfile
 from collections import defaultdict
 from pathlib import Path
+
+# PyTorch/ExecuTorch print many harmless FutureWarnings during export
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 sys.path.insert(0, str(Path(__file__).parent))
 from swipekit import engine as E  # noqa: E402
