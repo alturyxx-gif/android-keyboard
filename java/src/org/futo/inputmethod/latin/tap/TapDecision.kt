@@ -74,10 +74,13 @@ class TouchModel(
         if (s == null || s.n < MIN_TAPS) return NEUTRAL
         // Blend towards the defaults while there are few taps, and keep the spread sensible
         val trust = ((s.n - MIN_TAPS) / 80f).coerceIn(0.3f, 1f)
+        // The spread is learned only from taps that landed on the right key, so it always comes
+        // out too narrow; and a narrow spread makes letter predictions almost powerless (their
+        // pull shrinks with the spread squared). So it can only widen, never narrow below the default.
         return floatArrayOf(
             s.mx * trust, s.my * trust,
-            sqrt(s.vx).coerceIn(0.18f, 0.45f) * trust + DEFAULT_SD_X * (1 - trust),
-            sqrt(s.vy).coerceIn(0.18f, 0.45f) * trust + DEFAULT_SD_Y * (1 - trust),
+            sqrt(s.vx).coerceIn(DEFAULT_SD_X, 0.45f) * trust + DEFAULT_SD_X * (1 - trust),
+            sqrt(s.vy).coerceIn(DEFAULT_SD_Y, 0.45f) * trust + DEFAULT_SD_Y * (1 - trust),
         )
     }
 

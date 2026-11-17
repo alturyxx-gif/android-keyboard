@@ -180,6 +180,17 @@ class TouchModelTest {
         assertEquals(0f, tm.forKey('a')[0], 1e-6f)
     }
 
+    @Test fun accurateTyperStillGetsTheSamePullFromPredictions() {
+        // Taps always very close to each key's centre: the spread never narrows below the
+        // default, so a likely neighbour pulls an edge tap just as for a new user
+        val tm = TouchModel()
+        for (c in "abcdefghijklmnopqrstuvwxyz") repeat(300) { i -> tm.learn(c, if (i % 2 == 0) 0.03f else -0.03f, 0f) }
+        assertEquals(TouchModel.DEFAULT_SD_X, tm.forKey('e')[2], 1e-4f)
+        val (cx, cy) = centre('e')
+        val r = TapDecision.contextRule(KEYS, cx + 40, cy, probs('r' to 0.7f), tm, TapDecision.Params(strength = 0.5f))!!
+        assertEquals('r', r.letter)
+    }
+
     @Test fun learnedOffsetMovesTheKey() {
         val tm = TouchModel()
         repeat(300) { tm.learn('v', 0f, 0.35f) } // always hits v low

@@ -188,7 +188,8 @@ object TapPredictor {
                     model != null -> "model gave nothing; dictionary only"
                     else -> "model not loaded; dictionary only"
                 }
-                lastInfo = "'${req.prefix}': " + describe(probs) + " · $source · ${ms} ms"
+                lastInfo = "'${req.prefix}': " + describe(probs) + " · $source · ${ms} ms · strength " +
+                    "%.2f".format(strength * TapKeyFeedback.strengthMultiplier())
                 overlayVersion++
                 if (generation == req.gen) {
                     snapshot = Snapshot(req.gen, req.prefix, probs)
