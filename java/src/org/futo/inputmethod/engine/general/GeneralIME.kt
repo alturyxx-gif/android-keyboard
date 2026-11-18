@@ -295,6 +295,8 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         setNeutralSuggestionStrip()
         dictionaryFacilitator.onStartInput()
         languageModelFacilitator.onStartInput()
+        languageModelFacilitator.preload("keyboard opened")
+        org.futo.inputmethod.latin.xlm.ModelLoadStats.enabled = context.getSetting(org.futo.inputmethod.latin.xlm.ShowModelTimings)
         liveGrammar.onStartInput()
         org.futo.inputmethod.latin.tap.TapPredictor.refreshSettings(context)
         inputLogic.startInput(
@@ -520,7 +522,13 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
     var lmUpdateJob: Job? = null
     private suspend fun updateSuggestionsDictionaryInternal(inputStyle: Int, sequenceNumber: Int) {
         // This method returns null for us if LM is disabled
-        val predictionInputValues = languageModelFacilitator.makePredictionInputValues(inputStyle)
+        var predictionInputValues = languageModelFacilitator.makePredictionInputValues(inputStyle)
+        // While the typing model is still loading, don't wait for it (the keyboard would freeze
+        // for up to 350 ms when space is pressed): use the dictionary's suggestions for now
+        if(predictionInputValues != null && !languageModelFacilitator.isModelReady()) {
+            languageModelFacilitator.preload("first key press")
+            predictionInputValues = null
+        }
 
         var dictResult: SuggestedWords? = null
         var lmResult: ArrayList<SuggestedWordInfo>? = null

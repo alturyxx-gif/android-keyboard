@@ -124,6 +124,16 @@ fun PersonalisationScreen(navController: NavHostController) {
             }
         }
 
+        val showTimings = useDataStoreValue(org.futo.inputmethod.latin.xlm.ShowModelTimings)
+        androidx.compose.runtime.LaunchedEffect(showTimings) {
+            org.futo.inputmethod.latin.xlm.ModelLoadStats.enabled = showTimings
+        }
+        SettingToggleDataStore(
+            title = "Show typing model timings on the keyboard (testing)",
+            subtitle = "When and why the typing model loaded, how long it took, and how long the keyboard froze (stalls over 50 ms in the last 10 s)",
+            setting = org.futo.inputmethod.latin.xlm.ShowModelTimings
+        )
+
         SettingToggleDataStore(
             title = "Learn from my typing",
             subtitle = "Trains a small personal adjustment for the typing model, and remembers new words straight away",

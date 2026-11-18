@@ -4,9 +4,6 @@ import android.content.Context
 import android.util.Log
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.futo.inputmethod.latin.uix.SettingsKey
 import org.futo.inputmethod.latin.uix.getSetting
@@ -52,7 +49,6 @@ object TapPredictor {
     /** Set by the IME: next letters the dictionaries allow after a prefix (for replay testing) */
     var dictionaryProvider: ((String) -> Set<Int>?)? = null
 
-    private val scope = CoroutineScope(SupervisorJob() + LanguageModelScope)
 
     // ---- touch model ----
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; allowStructuredMapKeys = true }
@@ -168,7 +164,7 @@ object TapPredictor {
     private val predictorThread = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "TapPredictor").apply { priority = Thread.NORM_PRIORITY - 1; isDaemon = true }
     }
-    private var ownModel: LanguageModel? = null
+    @Volatile private var ownModel: LanguageModel? = null
     @Volatile private var ownModelLoading = false
 
     private fun drain() {
@@ -218,14 +214,41 @@ object TapPredictor {
         if (own != null && own.modelInfoLoader.path == main.modelInfoLoader.path && own.locale == main.locale) {
             return if (own.mNativeState != 0L) own else null
         }
-        if (ownModelLoading) return null
-        ownModelLoading = true
+        startLoadingCopy(main, "first prediction")
+        return null
+    }
+
+    /** Called once the keyboard's typing model has finished loading: load our copy next. */
+    fun warmUp() {
+        if (!enabled) return
+        val main = modelProvider?.invoke() ?: return
+        val own = ownModel
+        if (own != null && own.modelInfoLoader.path == main.modelInfoLoader.path && own.locale == main.locale) return
+        startLoadingCopy(main, "after the typing model")
+    }
+
+    /**
+     * Loads the predictor's copy on its own lowest-priority thread, only after the keyboard's
+     * model is loaded (never two loads at once), and not when the phone is short of memory.
+     */
+    private fun startLoadingCopy(main: LanguageModel, reason: String) {
+        if (main.mNativeState == 0L) return
+        synchronized(this) {
+            if (ownModelLoading) return
+            ownModelLoading = true
+        }
         val ctx = main.applicationContext
-        if (own != null) releaseModel()
-        scope.launch {
+        if (ownModel != null) releaseModel()
+        Thread {
             try {
-                val m = LanguageModel(ctx, null, main.modelInfoLoader, main.locale, threadsOverride = 1)
-                if (m.ensureLoaded()) ownModel = m
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_LOWEST)
+                if (lowOnMemory(ctx)) {
+                    lastError = "skipped loading the predictor's model copy: the phone is low on memory"
+                    return@Thread
+                }
+                val m = LanguageModel(ctx, null, main.modelInfoLoader, main.locale, threadsOverride = 1, label = "key predictor")
+                m.loadReason = reason
+                if (m.loadOnCurrentThread()) ownModel = m
                 else lastError = "the typing model copy did not load"
             } catch (e: Throwable) {
                 Log.w(TAG, "Could not load the predictor's typing model", e)
@@ -233,9 +256,14 @@ object TapPredictor {
             } finally {
                 ownModelLoading = false
             }
-        }
-        return null
+        }.apply { name = "TapPredictorLoad"; isDaemon = true }.start()
     }
+
+    private fun lowOnMemory(ctx: android.content.Context): Boolean = try {
+        val am = ctx.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val mi = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        mi.lowMemory || mi.availMem < 1_000_000_000L
+    } catch (e: Exception) { false }
 
     /** What happened on the last key press (shown in the debug view and on the settings page) */
     @Volatile var lastInfo: String = "nothing typed yet"

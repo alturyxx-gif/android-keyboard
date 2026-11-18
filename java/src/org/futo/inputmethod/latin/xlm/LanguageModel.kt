@@ -45,9 +45,52 @@ class LanguageModel(
     val adapterScaleMultiplier: Float? = null,
     /** Inference threads (null = the "Typing model threads" setting). */
     val threadsOverride: Int? = null,
+    /** Name shown in the load timings */
+    val label: String = "typing model",
 ) {
+    /** Why the next load happens (shown in the load timings) */
+    @Volatile var loadReason: String = "first key press"
+
     private suspend fun loadModel() = withContext(LanguageModelScope) {
         withContext(Dispatchers.Main) { JniUtils.loadNativeLibrary() }
+        loadModelHere()
+    }
+
+    /**
+     * Loads on the calling thread, at background priority so the keyboard's UI keeps getting
+     * CPU time while the model is read and the personal adjustment applied. (Threads the
+     * native code starts while loading inherit this priority.)
+     */
+    private fun loadModelHere() {
+        val tid = android.os.Process.myTid()
+        val oldPriority = try { android.os.Process.getThreadPriority(tid) } catch (e: Exception) { null }
+        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) } catch (_: Exception) { }
+        val reason = loadReason
+        ModelLoadStats.started(label, reason)
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        var ok = false
+        try {
+            openModelNow()
+            ok = true
+        } finally {
+            ModelLoadStats.finished(label, reason, android.os.SystemClock.elapsedRealtime() - t0, ok)
+            loadReason = "reload"
+            if (oldPriority != null) try { android.os.Process.setThreadPriority(oldPriority) } catch (_: Exception) { }
+        }
+    }
+
+    /**
+     * For a model used from its own thread (the key predictor's copy): loads right here instead
+     * of on [LanguageModelScope], so it never holds up the keyboard's suggestions.
+     */
+    fun loadOnCurrentThread(): Boolean {
+        if (mNativeState != 0L) return true
+        JniUtils.loadNativeLibrary()
+        loadModelHere()
+        return mNativeState != 0L
+    }
+
+    private fun openModelNow() {
 
         val modelPath = modelInfoLoader.path.absolutePath
 

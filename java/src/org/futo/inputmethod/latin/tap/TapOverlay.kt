@@ -9,6 +9,8 @@ import android.os.Looper
 import android.view.View
 import org.futo.inputmethod.keyboard.Keyboard
 import java.lang.ref.WeakReference
+import org.futo.inputmethod.latin.xlm.ModelLoadStats
+import org.futo.inputmethod.latin.xlm.UiStallMonitor
 
 /**
  * Debug view (Tap plan, Stage 4.4): shades the areas where a tap would now go to a different key
@@ -46,7 +48,9 @@ object TapOverlay {
                         seen = TapPredictor.overlayVersion
                         vv.invalidate()
                     }
-                    main.postDelayed(this, if (TapPredictor.debugOverlay) 50L else 500L)
+                    // Load timings: redraw only when the text would change
+                    if (vv != null && ModelLoadStats.enabled && vv.isShown && timingLines() != drawnTimings) vv.invalidate()
+                    main.postDelayed(this, if (TapPredictor.debugOverlay || ModelLoadStats.enabled) 50L else 500L)
                 }
             })
         }
@@ -55,6 +59,7 @@ object TapOverlay {
     /** [offX]/[offY]: add to key coordinates to get view coordinates. */
     @JvmStatic
     fun draw(canvas: Canvas, context: Context, keyboard: Keyboard?, offX: Int, offY: Int) {
+        drawTimings(canvas, offX, offY)
         if (!TapPredictor.debugOverlay || keyboard == null) return
         // Recalculated in the background; the last finished result is drawn meanwhile, so the
         // debug view never holds up typing
@@ -85,6 +90,29 @@ object TapOverlay {
         val w = textPaint.measureText(info)
         canvas.drawRect(offX.toFloat(), offY.toFloat(), offX + w + 16f, offY + 40f, textBg)
         canvas.drawText(info, offX + 8f, offY + 30f, textPaint)
+    }
+
+    private var drawnTimings: List<String> = emptyList()
+
+    private fun timingLines(): List<String> =
+        listOf(UiStallMonitor.summary()) + ModelLoadStats.summary().split(" · ")
+
+    /** Model load timings and UI stalls, at the bottom of the keyboard (when turned on). */
+    private fun drawTimings(canvas: Canvas, offX: Int, offY: Int) {
+        if (!ModelLoadStats.enabled) { drawnTimings = emptyList(); return }
+        val v = view?.get()
+        UiStallMonitor.ensureRunning { v?.isShown == true }
+        val lines = timingLines()
+        drawnTimings = lines
+        val h = 40f
+        val bottom = (v?.height ?: canvas.height).toFloat()
+        var y = bottom - h * lines.size
+        for (line in lines) {
+            val w = textPaint.measureText(line)
+            canvas.drawRect(offX.toFloat(), y, offX + w + 16f, y + h, textBg)
+            canvas.drawText(line, offX + 8f, y + 30f, textPaint)
+            y += h
+        }
     }
 
     private fun compute(context: Context, keyboard: Keyboard) {

@@ -177,23 +177,7 @@ public class LanguageModelFacilitator(
         if(transformerDisabled) return null
 
         val locale = dictionaryFacilitator.primaryLocale ?: return null
-        if ((languageModel == null && locale.language != skipLanguage) || (languageModel != null && languageModel?.locale?.language != locale.language)) {
-            skipLanguage = null
-            if(BuildConfig.DEBUG) Log.d(TAG, "Calling closeInternalLocked on model due to seeming locale change")
-            languageModel?.closeInternalLocked()
-            languageModel = null
-
-            // TODO: Cache value so we're not hitting this repeatedly
-            val options = ModelPaths.getModelOptions(context)
-            val model = options[locale.language]
-            if (model != null) {
-                languageModel = LanguageModel(context, lifecycleScope, model, locale)
-            } else {
-                if(BuildConfig.DEBUG) Log.d(TAG, "no model for ${locale.language}")
-                skipLanguage = locale.language
-                return null
-            }
-        }
+        if (!ensureModelObject(locale)) return null
 
         if(dictionaryFacilitator.mostConfidentLocale != languageModel?.locale) return null
 
@@ -225,6 +209,65 @@ public class LanguageModelFacilitator(
             return null
         }
     }
+
+    /** Creates the model object for [locale] if needed (not loaded yet); false if there's no model. */
+    private suspend fun ensureModelObject(locale: java.util.Locale): Boolean {
+        if ((languageModel == null && locale.language != skipLanguage) || (languageModel != null && languageModel?.locale?.language != locale.language)) {
+            skipLanguage = null
+            if(BuildConfig.DEBUG) Log.d(TAG, "Calling closeInternalLocked on model due to seeming locale change")
+            languageModel?.closeInternalLocked()
+            languageModel = null
+
+            // TODO: Cache value so we're not hitting this repeatedly
+            val options = ModelPaths.getModelOptions(context)
+            val model = options[locale.language]
+            if (model != null) {
+                languageModel = LanguageModel(context, lifecycleScope, model, locale)
+            } else {
+                if(BuildConfig.DEBUG) Log.d(TAG, "no model for ${locale.language}")
+                skipLanguage = locale.language
+                return false
+            }
+        }
+        return languageModel != null
+    }
+
+    /** True when the typing model for the current language is loaded and ready to use. */
+    fun isModelReady(): Boolean {
+        val m = languageModel ?: return false
+        return m.mNativeState != 0L && m.locale.language == dictionaryFacilitator.primaryLocale?.language
+    }
+
+    @Volatile private var preloading = false
+
+    /**
+     * Loads the typing model in the background before it's needed (keyboard opened, service
+     * started), so the first key presses don't wait for it. Safe to call often.
+     */
+    fun preload(reason: String) {
+        if (preloading || isModelReady() || shouldPassThroughToLegacySafe()) return
+        preloading = true
+        lifecycleScope.launch(languageModelScope) {
+            try {
+                val locale = dictionaryFacilitator.primaryLocale ?: return@launch
+                if (!ensureModelObject(locale)) return@launch
+                val m = languageModel ?: return@launch
+                if (m.mNativeState == 0L) m.loadReason = reason
+                m.ensureLoaded()
+                // The key predictor's own copy loads after this one, at low priority
+                org.futo.inputmethod.latin.tap.TapPredictor.warmUp()
+            } catch (e: ModelLoadingException) {
+                transformerDisabled = true
+                Log.e(TAG, "Preloading the typing model failed", e)
+            } catch (e: Exception) {
+                Log.w(TAG, "Preloading the typing model failed", e)
+            } finally {
+                preloading = false
+            }
+        }
+    }
+
+    private fun shouldPassThroughToLegacySafe(): Boolean = try { shouldPassThroughToLegacy() } catch (e: Exception) { true }
 
     suspend fun getLanguageModelSuggestions(values: PredictionInputValues): ArrayList<SuggestedWordInfo>? {
         if(values.composedData.mTypedWord.length > BinaryDictionary.DICTIONARY_MAX_WORD_LENGTH-1)
