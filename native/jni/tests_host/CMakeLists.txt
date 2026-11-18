@@ -47,3 +47,8 @@ add_executable(test_nextletter test_nextletter.cpp host_stubs.cpp ${JNI_ROOT}/sr
 target_include_directories(test_nextletter PRIVATE ${HOST_INCLUDES})
 target_compile_options(test_nextletter PRIVATE -w -include cstring)
 target_link_libraries(test_nextletter jni_latinime_common_static pthread)
+
+add_executable(dump_nextletter dump_nextletter.cpp host_stubs.cpp ${JNI_ROOT}/src/jni_utils.cpp)
+target_include_directories(dump_nextletter PRIVATE ${HOST_INCLUDES})
+target_compile_options(dump_nextletter PRIVATE -w -include cstring)
+target_link_libraries(dump_nextletter jni_latinime_common_static pthread)
