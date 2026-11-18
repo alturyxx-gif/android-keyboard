@@ -125,8 +125,9 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
             applicationContext, null, modelInfo, locale,
             adapterOverride = adapter,
             forceNoAdapter = adapter == null,
-            adapterScaleMultiplier = multiplier
-        )
+            adapterScaleMultiplier = multiplier,
+            label = "training check"
+        ).also { it.loadReason = "training" }
         return try {
             Quality(
                 personal = evaluate(lm, heldOut),

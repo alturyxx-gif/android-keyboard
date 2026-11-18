@@ -52,7 +52,10 @@ class LanguageModel(
     @Volatile var loadReason: String = "first key press"
 
     private suspend fun loadModel() = withContext(LanguageModelScope) {
-        withContext(Dispatchers.Main) { JniUtils.loadNativeLibrary() }
+        // No hop to the main thread here (loadNativeLibrary only triggers a thread-safe static
+        // initializer): a hop would let another request for this model start a second load
+        // of it in the meantime
+        JniUtils.loadNativeLibrary()
         loadModelHere()
     }
 
@@ -61,7 +64,9 @@ class LanguageModel(
      * CPU time while the model is read and the personal adjustment applied. (Threads the
      * native code starts while loading inherit this priority.)
      */
-    private fun loadModelHere() {
+    private fun loadModelHere() = synchronized(this) {
+        // Checked again under the lock: never two loads of the same model
+        if (mNativeState != 0L) return
         val tid = android.os.Process.myTid()
         val oldPriority = try { android.os.Process.getThreadPriority(tid) } catch (e: Exception) { null }
         try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) } catch (_: Exception) { }
@@ -115,6 +120,7 @@ class LanguageModel(
         if (mNativeState == 0L) {
             throw ModelLoadingException("Failed to load models $modelPath")
         }
+        ModelLoadStats.loaded(this, label)
     }
 
 
@@ -266,6 +272,8 @@ class LanguageModel(
         var composeInfo = withContext(Dispatchers.Main) {
             getComposeInfo(composedData)
         }
+        // The model may have been closed while we were on the main thread
+        if (mNativeState == 0L) return@withContext null
 
         if(composeInfo.xCoords.size != composeInfo.yCoords.size) {
             Log.w("LanguageModel", "Dropping composeInfo in rescoreSuggestions with mismatching coords size")
@@ -461,13 +469,16 @@ class LanguageModel(
     }
 
     suspend fun closeInternalLocked() = withContext(LanguageModelScope) {
-        if (mNativeState != 0L) {
-            closeNative(mNativeState)
-            mNativeState = 0
+        synchronized(this@LanguageModel) {
+            if (mNativeState != 0L) {
+                closeNative(mNativeState)
+                mNativeState = 0
+                ModelLoadStats.unloaded(this@LanguageModel)
+            }
         }
     }
 
-    var mNativeState: Long = 0
+    @Volatile var mNativeState: Long = 0
     private external fun openNative(sourceDir: String, adapterPath: String, adapterScale: Float, nThreads: Int): Long
     private external fun closeNative(state: Long)
     private external fun getSuggestionsNative( // inputs

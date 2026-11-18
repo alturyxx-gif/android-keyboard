@@ -211,20 +211,25 @@ object TapPredictor {
     private fun ownModelOrStartLoading(): LanguageModel? {
         val main = modelProvider?.invoke() ?: return null
         val own = ownModel
-        if (own != null && own.modelInfoLoader.path == main.modelInfoLoader.path && own.locale == main.locale) {
-            return if (own.mNativeState != 0L) own else null
-        }
-        startLoadingCopy(main, "first prediction")
+        if (own != null && isCopyOf(main)) return if (own.mNativeState != 0L) own else null
+        startLoadingCopy(main, if (own == null) "first prediction" else "typing model reloaded")
         return null
     }
+
+    /**
+     * The keyboard's model object our copy was made from. The keyboard makes a new object
+     * whenever the model changes (language, a training run, strength or threads setting), so
+     * a different object means our copy is out of date.
+     */
+    @Volatile private var copiedFrom: java.lang.ref.WeakReference<LanguageModel>? = null
+    private fun isCopyOf(main: LanguageModel) = copiedFrom?.get() === main
 
     /** Called once the keyboard's typing model has finished loading: load our copy next. */
     fun warmUp() {
         if (!enabled) return
         val main = modelProvider?.invoke() ?: return
-        val own = ownModel
-        if (own != null && own.modelInfoLoader.path == main.modelInfoLoader.path && own.locale == main.locale) return
-        startLoadingCopy(main, "after the typing model")
+        if (ownModel != null && isCopyOf(main)) return
+        startLoadingCopy(main, if (ownModel == null) "after the typing model" else "typing model reloaded")
     }
 
     /**
@@ -235,9 +240,12 @@ object TapPredictor {
         if (main.mNativeState == 0L) return
         synchronized(this) {
             if (ownModelLoading) return
+            // Checked again under the lock: a load may have just finished
+            if (ownModel != null && isCopyOf(main)) return
             ownModelLoading = true
         }
         val ctx = main.applicationContext
+        // A copy of an older typing model (before a training run or a settings change): replace it
         if (ownModel != null) releaseModel()
         Thread {
             try {
@@ -248,7 +256,9 @@ object TapPredictor {
                 }
                 val m = LanguageModel(ctx, null, main.modelInfoLoader, main.locale, threadsOverride = 1, label = "key predictor")
                 m.loadReason = reason
-                if (m.loadOnCurrentThread()) ownModel = m
+                if (m.loadOnCurrentThread()) {
+                    synchronized(this) { copiedFrom = java.lang.ref.WeakReference(main); ownModel = m }
+                }
                 else lastError = "the typing model copy did not load"
             } catch (e: Throwable) {
                 Log.w(TAG, "Could not load the predictor's typing model", e)

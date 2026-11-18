@@ -21,6 +21,16 @@ object ModelLoadStats {
     @Volatile private var events: List<Event> = emptyList()
     @Volatile private var loadingNow: Pair<String, Long>? = null
 
+    /** Models loaded in memory right now (a leak would show up here as an extra entry) */
+    private val live = java.util.Collections.synchronizedMap(java.util.IdentityHashMap<Any, String>())
+
+    fun loaded(model: Any, which: String) { live[model] = which; version++ }
+    fun unloaded(model: Any) { live.remove(model); version++ }
+    fun liveSummary(): String {
+        val names = synchronized(live) { live.values.toList() }
+        return "models in memory: ${names.size}" + if (names.isEmpty()) "" else " (${names.joinToString(", ")})"
+    }
+
     fun started(which: String, reason: String) {
         loadingNow = "$which ($reason)" to SystemClock.elapsedRealtime()
         version++
@@ -42,7 +52,8 @@ object ModelLoadStats {
             val agoText = if (ago < 60) "${ago}s ago" else "${ago / 60} min ago"
             parts.add("${e.which} ${if (e.ok) "${e.ms} ms" else "FAILED"} (${e.reason}, $agoText)")
         }
-        return if (parts.isEmpty()) "no model loaded yet in this session" else parts.joinToString(" · ")
+        parts.add(liveSummary())
+        return parts.joinToString(" · ")
     }
 }
 

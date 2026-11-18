@@ -143,7 +143,7 @@ public class LanguageModelFacilitator(
     private val TAG = "LanguageModelFacilitator"
     private val userDictionary = UserDictionaryObserver(context)
 
-    private var languageModel: LanguageModel? = null
+    @Volatile private var languageModel: LanguageModel? = null
     data class PredictionInputValues(
         val composedData: ComposedData,
         val ngramContext: NgramContext,
@@ -238,15 +238,15 @@ public class LanguageModelFacilitator(
         return m.mNativeState != 0L && m.locale.language == dictionaryFacilitator.primaryLocale?.language
     }
 
-    @Volatile private var preloading = false
+    private val preloading = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
      * Loads the typing model in the background before it's needed (keyboard opened, service
      * started), so the first key presses don't wait for it. Safe to call often.
      */
     fun preload(reason: String) {
-        if (preloading || isModelReady() || shouldPassThroughToLegacySafe()) return
-        preloading = true
+        if (isModelReady() || shouldPassThroughToLegacySafe()) return
+        if (!preloading.compareAndSet(false, true)) return
         lifecycleScope.launch(languageModelScope) {
             try {
                 val locale = dictionaryFacilitator.primaryLocale ?: return@launch
@@ -262,7 +262,7 @@ public class LanguageModelFacilitator(
             } catch (e: Exception) {
                 Log.w(TAG, "Preloading the typing model failed", e)
             } finally {
-                preloading = false
+                preloading.set(false)
             }
         }
     }
@@ -530,10 +530,13 @@ public class LanguageModelFacilitator(
         }
     }
 
-    public suspend fun destroyModel() {
+    public suspend fun destroyModel() = withContext(languageModelScope) {
         if(BuildConfig.DEBUG) Log.d(TAG, "destroyModel called")
-        languageModel?.closeInternalLocked()
+        // Closed and forgotten in one step on the model's thread: a load can't slip in between
+        // (it would load the old model again and leave it in memory, unreachable)
+        val m = languageModel
         languageModel = null
+        m?.closeInternalLocked()
     }
 
     public fun close() {
