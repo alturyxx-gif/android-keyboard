@@ -300,3 +300,23 @@ class TapKeyFeedbackTest {
         assertTrue(abs(TapKeyFeedback.strengthMultiplier() - 1f) < 1e-6f)
     }
 }
+
+class MissedSpaceSplitTest {
+    private val dict = setOf("hello", "there", "this", "is", "what", "are", "you", "doing", "about", "inbox",
+        "to", "be", "a", "the", "can", "cab", "on", "won't", "go", "home")
+    private val isWord: (String) -> Boolean = { it.lowercase() in dict }
+    private val letters = setOf('c', 'v', 'b', 'n')
+    private fun split(s: String) = MissedSpaceSplit.bestSplit(s, letters, isWord)
+
+    @Test fun splitsAtTheLetterAboveSpace() = assertEquals("hello there", split("hellobthere"))
+    @Test fun nIsAboveSpaceToo() = assertEquals("this is", split("thisnis"))
+    @Test fun keepsCapitals() = assertEquals("What are", split("Whatvare"))
+    @Test fun realWordsAreLeftAlone() = assertNull(split("inbox"))
+    @Test fun bothHalvesMustBeWords() = assertNull(split("hellobthera"))
+    @Test fun onlyLettersAboveTheSpaceBar() = assertNull(split("hellokthere"))
+    @Test fun singleLetterHalvesOnlyAOrI() {
+        assertEquals("a home", split("achome"))
+        assertNull(split("tbhome"))
+    }
+    @Test fun prefersTheMostBalancedSplit() = assertEquals("won't go", split("won'tbgo"))
+}

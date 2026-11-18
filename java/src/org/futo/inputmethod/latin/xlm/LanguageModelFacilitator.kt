@@ -383,6 +383,7 @@ public class LanguageModelFacilitator(
         if(trainingEnabled) {
             addInstantSuggestions(suggestionResults, typedWord, sentenceSoFar, protectTyped)
         }
+        if(!protectTyped) addMissedSpaceSplit(suggestionResults, typedWord, sentenceSoFar)
 
         val suggestedWords = Suggest.obtainNonBatchedInputSuggestedWords(
             wordComposer,
@@ -412,6 +413,29 @@ public class LanguageModelFacilitator(
 
 
         return suggestedWords
+    }
+
+    /**
+     * "hellobthere" -> "hello there": a letter above the space bar typed instead of space. When
+     * the typed word isn't a word but splits into two at such a letter, the two words become
+     * the autocorrection (still only applied if autocorrect is on; undo with backspace as usual).
+     */
+    private fun addMissedSpaceSplit(results: SuggestionResults, typedWord: String, sentenceSoFar: String) {
+        if(typedWord.length < 4) return
+        try {
+            if(RomanUrdu.isMostlyRomanUrdu("$sentenceSoFar $typedWord")) return
+            if(PersonalisationStore.urduVocab.knows(typedWord)) return
+            val letters = org.futo.inputmethod.latin.tap.MissedSpaceSplit.splitLetters(keyboardSwitcher.keyboard)
+            val split = org.futo.inputmethod.latin.tap.MissedSpaceSplit.bestSplit(typedWord, letters) {
+                dictionaryFacilitator.isValidSpellingWord(it)
+            } ?: return
+            val top = results.maxOfOrNull { it.mScore } ?: 0
+            results.add(SuggestedWordInfo(split, "", maxOf(top, 0) + 1,
+                SuggestedWordInfo.KIND_WHITELIST or SuggestedWordInfo.KIND_FLAG_APPROPRIATE_FOR_AUTO_CORRECTION,
+                null, 0, 0))
+        } catch(e: Exception) {
+            Log.w(TAG, "Missed-space check failed", e)
+        }
     }
 
     /**
