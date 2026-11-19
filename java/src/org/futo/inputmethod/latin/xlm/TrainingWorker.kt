@@ -61,6 +61,17 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
     override suspend fun doWork(): Result {
         if(!context.getSetting(USE_TRANSFORMER_FINETUNING)) return Result.success()
         if(!context.isDirectBootUnlocked) return Result.retry()
+        // Automatic runs wait until you're not using the phone (screen off): training keeps
+        // several cores busy for half an hour and would make everything stutter. "Train now"
+        // runs straight away.
+        val manual = inputData.getBoolean(KEY_MANUAL, false)
+        if(!manual) {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if(pm.isInteractive) {
+                Log.i(TAG, "Phone in use, training later")
+                return Result.retry()
+            }
+        }
 
         TrainingWorkerStatus.isTraining.value = true
         try {
@@ -183,18 +194,23 @@ class TrainingWorker(val context: Context, val parameters: WorkerParameters) : C
                 continue
             }
 
-            val threads = (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
+            // At most 4 threads, at background priority (see below), so the phone stays usable
+            val threads = (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 4)
             val steps = trainer.setPlan(TrainingPlan.MAX_STEPS, TrainingPlan.CONTEXT_TOKENS, TrainingPlan.BATCH, threads)
 
             val powerManager = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
             val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FUTOLatinIME::modelTrainer")
             val ok = withContext(Dispatchers.Default) {
                 wakeLock.acquire(120 * 60 * 1000L)
+                // Background priority: the training threads (started by this one) inherit it,
+                // so the keyboard and other apps always come first
+                try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) } catch (_: Exception) { }
                 try {
                     trainer.train()
                 } finally {
                     wakeLock.release()
                     trainer.close()
+                    try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT) } catch (_: Exception) { }
                 }
             }
 
@@ -323,9 +339,12 @@ private const val PERIODIC_NAME = "personalisation_training"
 private const val IMMEDIATE_NAME = "personalisation_training_now"
 
 /**
- * Trains roughly twice a day while the phone is charging and the battery isn't low.
- * (FUTO's version also required "device idle", which on many phones almost never happens.)
+ * Trains roughly twice a day while the phone is charging, the battery isn't low and the screen
+ * is off (checked when the run starts; if the phone is in use it tries again later).
+ * (FUTO's version required Android's "device idle", which on many phones almost never happens.)
  */
+private const val KEY_MANUAL = "manual"
+
 fun scheduleTrainingWorkerBackground(context: Context) {
     if(!context.isDirectBootUnlocked) return
 
@@ -337,10 +356,14 @@ fun scheduleTrainingWorkerBackground(context: Context) {
     val request = PeriodicWorkRequest.Builder(
         TrainingWorker::class.java,
         12L, TimeUnit.HOURS,
-    ).addTag(WORKER_TAG).setConstraints(constraints).build()
+    ).addTag(WORKER_TAG).setConstraints(constraints)
+        // When the phone was in use: try again in 30 minutes (then 60, 90, ...)
+        .setBackoffCriteria(androidx.work.BackoffPolicy.LINEAR, 30L, TimeUnit.MINUTES)
+        .build()
 
+    // UPDATE (not KEEP) so phones that already have the schedule get the new retry rule
     workManager(context).enqueueUniquePeriodicWork(
-        PERIODIC_NAME, ExistingPeriodicWorkPolicy.KEEP, request
+        PERIODIC_NAME, ExistingPeriodicWorkPolicy.UPDATE, request
     )
 }
 
@@ -348,6 +371,7 @@ fun scheduleTrainingWorkerBackground(context: Context) {
 fun scheduleTrainingWorkerImmediately(context: Context, model: ModelInfoLoader? = null, trainingData: String? = null) {
     val workRequest = OneTimeWorkRequestBuilder<TrainingWorker>()
         .setInitialDelay(0, TimeUnit.SECONDS)
+        .setInputData(androidx.work.workDataOf(KEY_MANUAL to true))
         .addTag(WORKER_TAG)
         .build()
 

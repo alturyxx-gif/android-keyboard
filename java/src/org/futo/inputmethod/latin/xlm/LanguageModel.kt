@@ -107,7 +107,7 @@ class LanguageModel(
                 (adapterScaleMultiplier ?: adapter?.let { PersonalAdapterFiles.scaleMultiplier(it) } ?: 1f)
         val useAdapter = !forceNoAdapter && adapter != null && adapter.isFile && strength > 0.0f
                 && (adapterOverride != null || applicationContext.getSetting(org.futo.inputmethod.latin.uix.USE_TRANSFORMER_FINETUNING))
-        val threads = threadsOverride ?: applicationContext.getSetting(TypingModelThreads)
+        val threads = threadsOverride ?: applicationContext.getSetting(TypingModelThreads).coerceIn(1, 3)
 
         mNativeState = openNative(
             modelPath,

@@ -158,11 +158,11 @@ fun PersonalisationScreen(navController: NavHostController) {
             SettingSlider(
                 title = "Typing model threads",
                 setting = TypingModelThreads,
-                range = 1.0f..4.0f,
+                range = 1.0f..3.0f,
                 transform = { it.roundToInt() },
-                indicator = { "$it" },
-                subtitle = "More threads = faster predictions on a fast phone. FUTO's default was 1.",
-                steps = 2
+                indicator = { "${it.coerceAtMost(3)}" },
+                subtitle = "More threads = slightly faster predictions, but they compete with the rest of the phone (4 could freeze it). FUTO's default was 1.",
+                steps = 1
             )
 
             if (isTraining) {

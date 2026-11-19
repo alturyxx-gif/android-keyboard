@@ -128,9 +128,31 @@ class TrainingDataBuilderTest {
     @Test
     fun replayIsMixedIn() {
         val entries = (0 until 100).map { entry("word$it", prior = "context number $it is") }
-        val replay = listOf("Everyday sentence one.", "Everyday sentence two.")
+        val replay = (0 until 100).map { "Everyday sentence $it." }
         val r = TrainingDataBuilder.build(entries, Random(3), replay = replay, replayRatio = 1.0f)
         assertEquals(90, r.train.count { it in replay }) // one replay line per training message
+    }
+
+    @Test
+    fun replaySentencesAreNotRepeatedMuch() {
+        val entries = (0 until 100).map { entry("word$it", prior = "context number $it is") }
+        val replay = listOf("Everyday sentence one.", "Everyday sentence two.")
+        val r = TrainingDataBuilder.build(entries, Random(3), replay = replay, replayRatio = 1.0f)
+        assertEquals(2 * TrainingDataBuilder.MAX_REPLAY_REPEATS, r.train.count { it in replay })
+    }
+
+    @Test
+    fun trainingSetHasAFixedSizeAndFavoursRecentMessages() {
+        // 3000 messages of 5 words, oldest first: 15000 words, far over the budget
+        val msgs = (0 until 3000).map { m -> (0 until 5).joinToString(" ") { "m${m}w$it" } }
+        val recency = msgs.withIndex().associate { it.value to it.index }
+        val picked = TrainingDataBuilder.selectWithinBudget(msgs, recency, Random(1))
+        val words = picked.sumOf { it.split(' ').size }
+        assertTrue("words: $words", words in TrainingDataBuilder.TRAIN_WORD_BUDGET..TrainingDataBuilder.TRAIN_WORD_BUDGET + 5)
+        // All of the newest 800 messages (4000 words = 80% of the budget) are in
+        assertTrue(msgs.takeLast(800).all { it in picked })
+        // and some older ones too
+        assertTrue(picked.count { recency[it]!! < 2200 } > 50)
     }
 
     @Test

@@ -65,6 +65,16 @@ object TrainingDataBuilder {
     const val TYPO_CONTEXT_WORDS = 4
     /** Everyday-English replay lines per personal line */
     const val REPLAY_RATIO = 1.0f
+    /** Each everyday-English sentence is used at most this many times per run (no memorising) */
+    const val MAX_REPLAY_REPEATS = 3
+    /**
+     * Words of your messages used per run. Training is capped at [TrainingPlan.MAX_STEPS], so a
+     * fixed-size set keeps it at about six passes however much you've typed (more text meant
+     * fewer passes, and runs got worse as history grew).
+     */
+    const val TRAIN_WORD_BUDGET = 5000
+    /** Share of the budget for your most recent messages; the rest is sampled from older ones */
+    const val RECENT_SHARE = 0.8f
     private const val SHINGLE = 4
 
     data class Result(val train: List<String>, val heldOut: List<String>, val usedEntries: Int)
@@ -166,6 +176,28 @@ object TrainingDataBuilder {
     }
 
     /**
+     * Up to [TRAIN_WORD_BUDGET] words: the most recent messages first ([RECENT_SHARE] of the
+     * budget), then a random sample of older ones.
+     */
+    fun selectWithinBudget(messages: List<String>, recency: Map<String, Int>, random: Random,
+                           budget: Int = TRAIN_WORD_BUDGET): List<String> {
+        val total = messages.sumOf { words(it).size }
+        if (total <= budget) return messages
+        val newestFirst = messages.sortedByDescending { recency[it.trim()] ?: -1 }
+        val out = ArrayList<String>()
+        var used = 0
+        var i = 0
+        while (i < newestFirst.size && used < budget * RECENT_SHARE) {
+            used += words(newestFirst[i]).size; out.add(newestFirst[i]); i++
+        }
+        for (m in newestFirst.drop(i).shuffled(random)) {
+            if (used >= budget) break
+            used += words(m).size; out.add(m)
+        }
+        return out.shuffled(random)
+    }
+
+    /**
      * @param heldOutFraction fraction of messages reserved for the before/after quality check
      * @param replay everyday-English sentences mixed into training ([REPLAY_RATIO] per message)
      */
@@ -183,7 +215,10 @@ object TrainingDataBuilder {
         val nHeld = min(100, max(3, (messages.size * heldOutFraction).toInt()))
             .coerceAtMost(messages.size / 2)
         val held = messages.take(nHeld)
-        val trainMessages = messages.drop(nHeld)
+        // Newest first: position of each message's last appearance in the history
+        val recency = HashMap<String, Int>()
+        usable.forEachIndexed { i, e -> recency[plainLine(e).trim()] = i }
+        val trainMessages = selectWithinBudget(messages.drop(nHeld), recency, random)
 
         // Held-out: the last few words of each held message, each scored given the text before it
         val heldLines = held.flatMap { m ->
@@ -193,12 +228,16 @@ object TrainingDataBuilder {
 
         // Typo examples only from entries whose text isn't part of a held-out message
         val heldShingles = HashSet<String>().also { s -> held.forEach { addShingles(it, s) } }
-        val typoLines = usable.filter { !isCovered(plainLine(it), heldShingles) }
+        // ...and only from the messages chosen for this run
+        val trainShingles = HashSet<String>().also { s -> trainMessages.forEach { addShingles(it, s) } }
+        val typoLines = usable.filter { val l = plainLine(it); !isCovered(l, heldShingles) && isCovered(l, trainShingles) }
             .flatMap { typoExamplesFor(it, random) }
 
         val replayLines = if (replay.isEmpty()) emptyList() else {
-            val n = (trainMessages.size * replayRatio).toInt()
-            List(n) { replay[random.nextInt(replay.size)] }
+            val n = min((trainMessages.size * replayRatio).toInt(), replay.size * MAX_REPLAY_REPEATS)
+            // Spread evenly over the sentences rather than at random, so none repeats much
+            val order = replay.shuffled(random)
+            List(n) { order[it % order.size] }
         }
 
         val trainLines = (trainMessages + typoLines + replayLines).shuffled(random)
